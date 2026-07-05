@@ -282,12 +282,8 @@ fi
 # --- Build prompt extras -------------------------------------------------------
 
 EXTRA_NOTES=""
-if [ -n "$CONTENT_FILE" ]; then
-  EXTRA_NOTES="The page content has already been fetched via browser automation and saved to raw/_prefetched.txt in the wiki directory. Read that file FIRST. Do NOT try to WebFetch the URL. Delete raw/_prefetched.txt when done.
-"
-fi
 if [ "$FORCE" -eq 1 ]; then
-  EXTRA_NOTES="${EXTRA_NOTES}This is a re-ingest — update the existing raw file and wiki page, do not duplicate them.
+  EXTRA_NOTES="This is a re-ingest — update the existing summary and topic page, do not duplicate them.
 "
 fi
 if [ -n "$NOTE" ]; then
@@ -314,17 +310,27 @@ llm_failed() {
 # orchestrating the pipeline (observed 2026-07-05). The in-prompt guardrails
 # below reinforce this.
 if [ "$REPO_MODE" -eq 1 ]; then
-  cat <<INGEST_EOF | (cd "$WT" && "$CLI" -p --allowedTools "Read,Write,Edit,Bash,WebFetch,WebSearch" --add-dir "$WT") || llm_failed
+  cat <<INGEST_EOF | (cd "$WT" && "$CLI" -p --allowedTools "Read,Write,Edit,Bash" --add-dir "$WT") || llm_failed
 You are ingesting a GitHub repository into an Obsidian wiki. You have the full repo cloned locally for deep analysis.
 
 Wiki location: $WT
 Cloned repo: $CLONE_DIR
 Repo URL: $INGEST_URL
 
-The wiki CLAUDE.md has been loaded via --add-dir and defines page format and conventions. Follow it.
+The repo's README has ALREADY been saved verbatim to raw/$SLUG.md — do NOT refetch it. Read the cloned repo at $CLONE_DIR for code. Do NOT use WebFetch, WebSearch, or any browser tool.
+
+The wiki CLAUDE.md (loaded via --add-dir) defines page format and the three-tier layout (raw/ = verbatim, summary/ = precis, topic/ = analysis). Follow it.
 
 IMPORTANT: You are one step inside a larger pipeline. Work ONLY inside $WT (plus reading $CLONE_DIR). Do NOT run the wiki-ingest scripts, do NOT use surf or any browser automation, and do NOT run git branch/commit/merge/push — the caller owns all orchestration, commits, and retries.
 $EXTRA_NOTES
+STEP 0 — VERDICT (do this first): Read raw/$SLUG.md. Decide whether its body is
+real repository content (a README/docs), or an error page, access wall, or empty
+placeholder.
+- If it is NOT real content (BLOCKED): run 'rm raw/$SLUG.md', write NOTHING else,
+  and stop. Do not create summary/ or topic/ files. Do not edit index.md or log.md.
+- If it IS real content (CONTENT): leave raw/$SLUG.md exactly as-is (do not edit
+  it) and continue with the analysis below.
+
 ## Phase 1: Repo exploration
 
 Analyze the cloned repo at $CLONE_DIR. Do NOT just read the README — dig into the actual code:
@@ -358,20 +364,21 @@ For AI/agent repos specifically, also identify:
 
 ## Phase 3: Wiki page creation
 
-1. Save to raw/<slug>.md with YAML frontmatter (url, title, author, date_fetched, date_published). Include the full analysis in the raw file. The frontmatter MUST include a url: line whose value is exactly this URL: $INGEST_URL — duplicate detection depends on it.
-2. Read index.md for existing pages and cross-link targets. Grep for related keywords.
-3. Create a wiki page at <Title>.md with:
+Leave raw/$SLUG.md exactly as-is (the verbatim README). Then produce:
+
+1. summary/$SLUG.md — a concise precis of the project (frontmatter with url/title/author/dates + a few short paragraphs). Same slug as the raw file.
+2. topic/<Title>.md — the analysis page with:
    - One-paragraph summary of what this project is and why it matters
    - **Architecture** section — how it's built, with specific file/module references
    - **Key techniques** section — the non-obvious stuff, with code-level specifics
    - **Design decisions** section — what trade-offs were made and why
    - **Comparison notes** — how this approach differs from related projects in the wiki (check index.md)
    - Tags: #tool #project plus domain tags (#agents #database #memory etc.)
-   - [[wikilinks]] to related pages
-   - Source/date footer
-4. Update index.md — add under the most appropriate section with a one-line summary.
-5. Append to log.md — exactly ONE bullet line per ingest, in EXACTLY this format (no headings, no multi-line entries, no other format):
-   - YYYY-MM-DD: Ingested [Title](URL) (author, site, publication-date) — 1–3 sentence summary. → raw/<slug>.md, [[Page Title]]. Cross-links: [[A]], [[B]].
+   - [[wikilinks]] to related pages, and a source footer linking [[raw/$SLUG]] and [[summary/$SLUG]]
+   Read index.md for cross-link targets and grep existing topic pages for related keywords.
+3. Update index.md — add the topic page under the most appropriate section with a one-line summary.
+4. Append to log.md — exactly ONE bullet line, EXACTLY this format:
+   - $INGEST_DATE: Ingested [Title]($INGEST_URL) (author, site, publication-date) — 1–3 sentence summary. → raw/$SLUG.md, [[Page Title]]. Cross-links: [[A]], [[B]].
 
 Guidelines:
 - Be specific: "uses a skip list for the index" not "uses efficient data structures"
@@ -381,32 +388,41 @@ Guidelines:
 - Today's date is $INGEST_DATE
 INGEST_EOF
 else
-  cat <<INGEST_EOF | (cd "$WT" && "$CLI" -p --allowedTools "Read,Write,Edit,Bash,WebFetch,WebSearch" --add-dir "$WT") || llm_failed
-You are ingesting a URL into an Obsidian wiki.
+  cat <<INGEST_EOF | (cd "$WT" && "$CLI" -p --allowedTools "Read,Write,Edit,Bash" --add-dir "$WT") || llm_failed
+You are curating one source into an Obsidian wiki. The source text has ALREADY
+been fetched and saved verbatim to raw/$SLUG.md (frontmatter + body). Do NOT
+fetch anything. Do NOT use WebFetch, WebSearch, or any browser tool.
 
 Wiki location: $WT
+The wiki CLAUDE.md (loaded via --add-dir) defines page format and the three-tier
+layout (raw/ = verbatim, summary/ = precis, topic/ = analysis). Follow it.
 
-The wiki CLAUDE.md has been loaded via --add-dir and defines page format and conventions. Follow it.
-
-URL to ingest: $INGEST_URL
-
-IMPORTANT: You are one step inside a larger pipeline. Work ONLY inside $WT. Do NOT run the wiki-ingest scripts, do NOT use surf or any browser automation, and do NOT run git branch/commit/merge/push — the caller owns all orchestration, commits, and retries.
+Source URL: $INGEST_URL
 $EXTRA_NOTES
-Steps:
-1. Fetch the URL with WebFetch. For GitHub repos, also fetch the raw README.
-2. Read index.md for existing pages and cross-link targets. Grep for related keywords in existing wiki pages.
-3. Save to raw/<slug>.md with YAML frontmatter (url, title, author, date_fetched, date_published). The frontmatter MUST include a url: line whose value is exactly this URL: $INGEST_URL — duplicate detection depends on it.
-4. Create a wiki page at <Title>.md in the wiki directory: one-paragraph precis, key quotes (blockquoted with commentary), key themes (#concept #tool #pattern #person), critical analysis (opinionated — sharp takes not bland summaries), [[wikilinks]] to related pages, source/date footer.
-5. Update index.md — add under the most appropriate section with a one-line summary.
-6. Append to log.md — exactly ONE bullet line per ingest, in EXACTLY this format (no headings, no multi-line entries, no other format):
-   - YYYY-MM-DD: Ingested [Title](URL) (author, site, publication-date) — 1–3 sentence summary. → raw/<slug>.md, [[Page Title]]. Cross-links: [[A]], [[B]].
+STEP 0 — VERDICT (do this first): Read raw/$SLUG.md. Decide whether its body is
+the real article/content, or a login wall, paywall teaser, cookie/consent page,
+bot-check, or JavaScript app shell.
+- If it is NOT real content (BLOCKED): run 'rm raw/$SLUG.md', write NOTHING else,
+  and stop. Do not create summary/ or topic/ files. Do not edit index.md or log.md.
+- If it IS real content (CONTENT): leave raw/$SLUG.md exactly as-is (do not edit
+  it) and continue.
+
+On CONTENT, produce:
+1. summary/$SLUG.md — a concise precis (frontmatter with url/title/author/dates
+   + a few short paragraphs). Same slug as the raw file.
+2. topic/<Title>.md — the analysis page: one-paragraph precis, key quotes
+   (blockquoted, with commentary), key themes (#concept #tool #pattern #person),
+   opinionated critical analysis, [[wikilinks]] to related pages, source footer
+   linking [[raw/$SLUG]] and [[summary/$SLUG]]. Read index.md for cross-link
+   targets and grep existing topic pages for related keywords.
+3. Update index.md — add the topic page under the most appropriate section.
+4. Append to log.md — exactly ONE bullet line, EXACTLY this format:
+   - $INGEST_DATE: Ingested [Title]($INGEST_URL) (author, site, publication-date) — 1–3 sentence summary. → raw/$SLUG.md, [[Page Title]]. Cross-links: [[A]], [[B]].
 
 Guidelines:
-- Preserve the author's voice when quoting
-- Be opinionated in critical analysis
-- If the URL can't be fetched, STOP: write no files and end your turn. The caller detects the empty result and refetches via browser automation, then re-runs you with the content. Do not build a page from search results or guesswork.
-- Keep pages phone-readable: short paragraphs, clear headers
-- Today's date is $INGEST_DATE
+- Preserve the author's voice when quoting; be opinionated in analysis.
+- Keep pages phone-readable: short paragraphs, clear headers.
+- Today's date is $INGEST_DATE.
 INGEST_EOF
 fi
 
