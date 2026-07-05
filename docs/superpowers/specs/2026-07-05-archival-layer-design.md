@@ -53,6 +53,7 @@ The LLM *producing* summary+topic is itself the CONTENT verdict — the same mec
 New ingests produce all three tiers with a real archive.
 
 - **New fetch+extract module** (`bin/wiki-ingest-fetch` or inline in `wiki-ingest-run`): given a URL, fetch via trafilatura → cleaned Markdown → stdout/file. Repo mode: use the cloned README. Deterministic, unit-testable.
+- **Verbatim-only mode** (e.g. a `--verbatim-only` flag on the fetch/verdict path): fetch → LLM CONTENT/BLOCKED verdict → on CONTENT write `raw/<slug>.md` only, touching no `summary/` or `topic/` file. Phase 3 backfill reuses this exact mode; building it here (not as a Phase-3 one-off) keeps a single tested code path.
 - **`wiki-ingest-run` changes:** fetch verbatim → stage `raw/<slug>.md` → invoke the LLM with the "judge then write summary/ + topic/" prompt (no WebFetch). Commit logic keys off LLM output as today (empty → exit 3). The `--content` path becomes the common case rather than a fallback.
 - **Prompt changes:** add the CONTENT/BLOCKED step-0 instruction; retarget outputs to `summary/<slug>.md` and `topic/<Title>.md`; drop WebFetch instructions.
 - **Schema update:** `assets/wiki-CLAUDE.md` (and the live wiki `CLAUDE.md`) document the three-directory layout, the verbatim/summary/topic split, and the frontmatter home (`raw/` carries the `url:` line that dup-check depends on).
@@ -69,12 +70,23 @@ New ingests produce all three tiers with a real archive.
 
 ## Phase 3 — Verbatim backfill (slow, lossy)
 
-- Two-pass over the ~700 sources using Phase 1's fetch+extract module:
-  - Pass 1: HTTP fetch+extract → LLM CONTENT/BLOCKED → on CONTENT write `raw/<slug>.md`.
-  - Pass 2: surf-retry the BLOCKED/failed set → judge again.
-  - Remainder: log to `ingest-queue.md` with reason (dead / paywalled / bot-blocked).
+**Safety invariant (non-negotiable): backfill is strictly additive to `raw/`. It never creates, modifies, or deletes any `summary/` or `topic/` file.** A failed or BLOCKED re-fetch must leave the existing summary (and topic page) completely intact and simply queue the URL. We must not trade an existing summary for a failed fetch.
+
+This means backfill does **not** run the full ingest pipeline (which regenerates and would overwrite `summary/` + `topic/`). It runs a narrower **verbatim-only mode**:
+
+```
+for each source lacking a raw/<slug>.md:
+  fetch+extract (trafilatura; surf on pass 2)
+    → stage candidate text
+    → LLM verdict: CONTENT or BLOCKED?   (verdict ONLY — no summary/topic regeneration)
+        CONTENT → write raw/<slug>.md (verbatim) and nothing else
+        BLOCKED → write nothing; log to ingest-queue.md
+```
+
+- Two-pass over the ~700 sources: Pass 1 HTTP fetch+extract; Pass 2 surf-retry the BLOCKED/failed set; remainder logged to `ingest-queue.md` with reason (dead / paywalled / bot-blocked).
 - Runs in the background; idempotent (skip sources that already have a `raw/` verbatim file).
 - Report hit-rate; expect a meaningful miss tail for older/dead links.
+- Because `summary/` and `topic/` are never written by backfill, even a bug cannot lose them (and they remain in git history regardless).
 
 ## Sequencing & rationale
 
