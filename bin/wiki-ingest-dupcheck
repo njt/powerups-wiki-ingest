@@ -100,7 +100,7 @@ while IFS=$'\t' read -r file url; do
          /^---[ \t\r]*$/ { exit }
          /^title:/ || /^date_fetched:/ { print "  " $0 }' "$file"
   fi
-done < <(awk '
+done < <(find "$WIKI/raw" "$WIKI/summary" -type f -name '*.md' -exec awk '
   FNR==1 { fm = /^---[ \t\r]*$/ ? 1 : 0; next }
   fm && /^---[ \t\r]*$/ { fm = 0; next }
   fm && /^url:[ \t]*/ {
@@ -108,7 +108,7 @@ done < <(awk '
     sub(/^url:[ \t]*/, "", line)
     sub(/[ \t\r]+$/, "", line)
     printf "%s\t%s\n", FILENAME, line
-  }' "$WIKI"/raw/*.md "$WIKI"/summary/*.md 2>/dev/null)
+  }' {} + 2>/dev/null)
 
 [ "$found" -eq 1 ] && exit 0
 exit 1
