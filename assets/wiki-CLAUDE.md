@@ -26,6 +26,17 @@ Each source produces up to three artifacts, sharing one slug:
 
 `index.md` and `log.md` stay at the wiki root.
 
+## Synthesis on ingest (compounding, not just filing)
+
+Ingesting a source is not only "create a new topic page." After writing the new
+page, integrate the source into the existing wiki: find the 2–4 most-related
+existing `topic/` pages and make **minimal, additive** edits — weave in the new
+finding in a sentence or two and add a `[[backlink]]` to the new page where it
+strengthens, nuances, or complicates that page. Never rewrite, reorder, or
+delete another page's content; only add. Skip when nothing is genuinely related.
+This keeps the wiki a compounding artifact rather than a pile of disconnected
+pages.
+
 ## Page Format
 
 Every wiki page starts with:

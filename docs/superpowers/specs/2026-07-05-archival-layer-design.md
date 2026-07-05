@@ -48,6 +48,24 @@ The LLM *producing* summary+topic is itself the CONTENT verdict — the same mec
 
 **Accepted tradeoff:** without a forced-surf domain list, known-JS sites burn one cheap HTTP+verdict roundtrip before falling to surf. Recorded as a future optimization (a domain shortcut list), not built now.
 
+## Extra synthesis (added 2026-07-05, after the karpathy PKB gist)
+
+Ingest is **compounding**, not just filing: after writing the new `topic/` page,
+the LLM makes **minimal, additive** edits to the 2–4 most-related existing topic
+pages (weave in the finding + a `[[backlink]]`), never removing existing content.
+(Scope chosen: update related pages only — not standing synthesis hubs,
+contradiction-flagging, or follow-up suggestions, which remain future options.)
+
+**Known tension:** editing existing pages means two *simultaneous* ingests that
+both revise the same popular page can hit a real content merge conflict (today's
+`merge=union` only covers index/log, and appending prose isn't union-safe). This
+is rare — the ytx job is sequential, and parallel `/wiki-ingest` batches are
+usually diverse topics — and the loser's branch is kept for retry (no data loss).
+Mitigation kept minimal (surgical additive edits shrink the surface); a future
+hardening is an append-only "Related" section under `merge=union`. Verified
+2026-07-05: a seeded ingest added a synthesis paragraph + backlink to related
+pages with existing content byte-preserved.
+
 ## Phase 1 — Forward pipeline (plugin v1.1.0)
 
 New ingests produce all three tiers with a real archive.

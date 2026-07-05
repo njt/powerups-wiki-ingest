@@ -399,8 +399,14 @@ Leave raw/$SLUG.md exactly as-is (the verbatim README). Then produce:
    - Tags: #tool #project plus domain tags (#agents #database #memory etc.)
    - [[wikilinks]] to related pages, and a source footer linking [[raw/$SLUG]] and [[summary/$SLUG]]
    Read index.md for cross-link targets and grep existing topic pages for related keywords.
-3. Update index.md — add the topic page under the most appropriate section with a one-line summary.
-4. Append to log.md — exactly ONE bullet line, EXACTLY this format:
+3. SYNTHESIS — integrate this project into the existing wiki, don't just file a
+   new page. Pick the 2–4 MOST-related existing topic/ pages (use index.md and
+   grep) and make a MINIMAL, ADDITIVE edit to each: a sentence weaving in this
+   project plus a [[<new Title>]] backlink, where it compares to or complicates
+   that page. Do NOT rewrite, restructure, or delete existing content. Skip if
+   nothing is genuinely related.
+4. Update index.md — add the topic page under the most appropriate section with a one-line summary.
+5. Append to log.md — exactly ONE bullet line, EXACTLY this format:
    - $INGEST_DATE: Ingested [Title]($INGEST_URL) (author, site, publication-date) — 1–3 sentence summary. → raw/$SLUG.md, [[Page Title]]. Cross-links: [[A]], [[B]].
 
 Guidelines:
@@ -438,13 +444,22 @@ On CONTENT, produce:
    opinionated critical analysis, [[wikilinks]] to related pages, source footer
    linking [[raw/$SLUG]] and [[summary/$SLUG]]. Read index.md for cross-link
    targets and grep existing topic pages for related keywords.
-3. Update index.md — add the topic page under the most appropriate section.
-4. Append to log.md — exactly ONE bullet line, EXACTLY this format:
+3. SYNTHESIS — integrate this source into the existing wiki, don't just file a
+   new page. Pick the 2–4 MOST-related existing topic/ pages (use index.md and
+   grep). For each, make a MINIMAL, ADDITIVE edit: weave in the new finding in a
+   sentence or two plus a [[<new Title>]] backlink, where it strengthens,
+   nuances, or complicates that page. Do NOT rewrite, restructure, reorder, or
+   delete existing content — only add. If no existing page is genuinely related,
+   skip this step (a near-empty wiki is fine).
+4. Update index.md — add the topic page under the most appropriate section.
+5. Append to log.md — exactly ONE bullet line, EXACTLY this format:
    - $INGEST_DATE: Ingested [Title]($INGEST_URL) (author, site, publication-date) — 1–3 sentence summary. → raw/$SLUG.md, [[Page Title]]. Cross-links: [[A]], [[B]].
 
 Guidelines:
 - Preserve the author's voice when quoting; be opinionated in analysis.
 - Keep pages phone-readable: short paragraphs, clear headers.
+- Edits to existing pages must be additive and surgical — never remove another
+  page's content.
 - Today's date is $INGEST_DATE.
 INGEST_EOF
 fi
