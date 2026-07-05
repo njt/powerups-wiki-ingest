@@ -3,8 +3,10 @@
 # ingested into the wiki.
 #
 # Canonicalizes the given URL and every `url:` frontmatter line in
-# $WIKI/raw/*.md the same way, then compares for exact string equality
-# (no regex matching against raw URL text).
+# the `url:` frontmatter of $WIKI/raw/*.md AND $WIKI/summary/*.md the same way,
+# then compares for exact string equality (no regex against raw URL text).
+# Both tiers carry a url: line (verbatim raw and the precis), so scanning both
+# covers migrated content (url only in summary/) and new/backfilled content.
 #
 # Exit codes:
 #   0  duplicate found (prints matching raw file path(s) + title/date_fetched)
@@ -79,7 +81,7 @@ canonicalize() {
 canonicalize "$1"
 TARGET="$CANON"
 
-[ -d "$WIKI/raw" ] || exit 1
+[ -d "$WIKI/raw" ] || [ -d "$WIKI/summary" ] || exit 1
 
 found=0
 
@@ -106,7 +108,7 @@ done < <(awk '
     sub(/^url:[ \t]*/, "", line)
     sub(/[ \t\r]+$/, "", line)
     printf "%s\t%s\n", FILENAME, line
-  }' "$WIKI"/raw/*.md 2>/dev/null)
+  }' "$WIKI"/raw/*.md "$WIKI"/summary/*.md 2>/dev/null)
 
 [ "$found" -eq 1 ] && exit 0
 exit 1
