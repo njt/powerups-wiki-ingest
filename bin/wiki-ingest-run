@@ -47,8 +47,26 @@ if [ "$WIKI_HEAD" != "main" ]; then
 fi
 
 usage() {
-  echo "usage: wiki-ingest-run [--repo] [--content FILE] [--force] [--note TEXT] [--date YYYY-MM-DD] [--dry-run] <url>" >&2
+  echo "usage: wiki-ingest-run [--repo] [--content FILE] [--force] [--note TEXT] [--date YYYY-MM-DD] [--dry-run] [--verbatim-only] <url>" >&2
   exit 64
+}
+
+# Deterministic slug from a URL: last meaningful path segment, lowercased,
+# non-alphanumerics → hyphens; fall back to the host. Same input → same slug,
+# so raw/<slug>.md and summary/<slug>.md always agree.
+url_slug() {
+  local u="$1" seg host
+  u="${u%%\?*}"; u="${u%%#*}"; u="${u#http://}"; u="${u#https://}"; u="${u#www.}"
+  u="${u%/}"
+  host="${u%%/*}"
+  seg="${u##*/}"
+  case "$seg" in
+    ""|"$host") seg="$host" ;;
+  esac
+  seg=$(printf '%s' "$seg" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9' '-')
+  seg="${seg##-}"; seg="${seg%%-}"
+  [ -n "$seg" ] || seg="source"
+  printf '%s' "$seg"
 }
 
 REPO_MODE=0
@@ -196,10 +214,45 @@ if [ "$REPO_MODE" -eq 1 ] && [ "$DRY_RUN" -ne 1 ]; then
 fi
 
 git -C "$WIKI" worktree add "$WT" -b "$BRANCH" main
+mkdir -p "$WT/raw" "$WT/summary" "$WT/topic"
 
-mkdir -p "$WT/raw"
-if [ -n "$CONTENT_FILE" ]; then
-  cp "$CONTENT_FILE" "$WT/raw/_prefetched.txt"
+# Stage the verbatim source deterministically (dry-run skips this).
+SLUG=""
+if [ "$DRY_RUN" -ne 1 ]; then
+  SLUG=$(url_slug "$INGEST_URL")
+  FETCH="$SCRIPT_DIR/wiki-ingest-fetch"
+  body=""
+  if [ "$REPO_MODE" -eq 1 ]; then
+    # Repo verbatim = the README (first match, case-insensitive).
+    readme=$(find "$CLONE_DIR" -maxdepth 1 -iname 'readme*' 2>/dev/null | head -1)
+    [ -n "$readme" ] && body=$(cat "$readme")
+  elif [ -n "$CONTENT_FILE" ]; then
+    # surf grab (already text/markdown) — extract if it is HTML, else pass through.
+    if head -c 200 "$CONTENT_FILE" | grep -qi '<html\|<!doctype'; then
+      body=$("$FETCH" --file "$CONTENT_FILE" 2>/dev/null)
+    else
+      body=$(cat "$CONTENT_FILE")
+    fi
+  else
+    body=$("$FETCH" "$INGEST_URL" 2>/dev/null)
+  fi
+
+  # Empty extraction = nothing to archive → fetch failure → exit 3 (→ surf).
+  trimmed=$(printf '%s' "$body" | tr -d '[:space:]')
+  if [ ${#trimmed} -lt 40 ]; then
+    echo "NO CONTENT — fetch/extract empty for $INGEST_URL"
+    exit 3
+  fi
+
+  # Write the verbatim archive: minimal frontmatter (url is what dup-check needs)
+  # + the exact extracted body. The LLM must NOT rewrite this file.
+  {
+    printf -- '---\n'
+    printf 'url: %s\n' "$INGEST_URL"
+    printf 'date_fetched: %s\n' "$INGEST_DATE"
+    printf -- '---\n\n'
+    printf '%s\n' "$body"
+  } > "$WT/raw/$SLUG.md"
 fi
 
 # --- Dry run: exercise the commit + merge plumbing, never touching main -------
