@@ -73,6 +73,7 @@ REPO_MODE=0
 CONTENT_FILE=""
 FORCE=0
 DRY_RUN=0
+VERBATIM_ONLY=0
 NOTE=""
 INGEST_DATE="$(date '+%Y-%m-%d')"
 INGEST_URL=""
@@ -85,6 +86,7 @@ while [ $# -gt 0 ]; do
     --note)    [ $# -ge 2 ] || usage; NOTE="$2"; shift 2 ;;
     --date)    [ $# -ge 2 ] || usage; INGEST_DATE="$2"; shift 2 ;;
     --dry-run) DRY_RUN=1; shift ;;
+    --verbatim-only) VERBATIM_ONLY=1; shift ;;
     --)        shift; [ $# -eq 1 ] || usage; INGEST_URL="$1"; shift ;;
     -*)        usage ;;
     *)         [ -z "$INGEST_URL" ] || usage; INGEST_URL="$1"; shift ;;
@@ -309,7 +311,17 @@ llm_failed() {
 # whatever project CLAUDE.md lives there and can start recursively
 # orchestrating the pipeline (observed 2026-07-05). The in-prompt guardrails
 # below reinforce this.
-if [ "$REPO_MODE" -eq 1 ]; then
+if [ "$VERBATIM_ONLY" -eq 1 ]; then
+  cat <<INGEST_EOF | (cd "$WT" && "$CLI" -p --allowedTools "Read,Bash" --add-dir "$WT") || llm_failed
+You are validating one archived source. The text is saved verbatim at
+raw/$SLUG.md. Do NOT fetch anything. Do NOT create or edit any other file.
+
+Read raw/$SLUG.md. If its body is NOT real article/content (login wall, paywall
+teaser, consent/cookie page, bot-check, or JS app shell), run 'rm raw/$SLUG.md'.
+If it IS real content, do nothing (leave the file as-is). Write no other files,
+do not touch summary/, topic/, index.md, or log.md.
+INGEST_EOF
+elif [ "$REPO_MODE" -eq 1 ]; then
   cat <<INGEST_EOF | (cd "$WT" && "$CLI" -p --allowedTools "Read,Write,Edit,Bash" --add-dir "$WT") || llm_failed
 You are ingesting a GitHub repository into an Obsidian wiki. You have the full repo cloned locally for deep analysis.
 
