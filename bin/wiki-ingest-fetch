@@ -1,0 +1,42 @@
+#!/bin/bash
+# wiki-ingest-fetch <url> | --file <path> — fetch/extract a source to cleaned
+# Markdown on stdout. Uses trafilatura (readability extraction).
+#
+# Exit codes:
+#   0  non-empty content extracted (printed to stdout)
+#   3  nothing meaningful extracted (empty) — caller treats as fetch failure
+#   1  tool missing / usage error
+#
+# TRAFILATURA env var overrides the binary path (default: trafilatura on PATH,
+# else ~/.local/bin/trafilatura).
+set -u
+
+TRAF="${TRAFILATURA:-}"
+if [ -z "$TRAF" ]; then
+  if command -v trafilatura >/dev/null 2>&1; then TRAF="trafilatura"
+  elif [ -x "$HOME/.local/bin/trafilatura" ]; then TRAF="$HOME/.local/bin/trafilatura"
+  else echo "wiki-ingest-fetch: trafilatura not found (pipx install trafilatura)" >&2; exit 1; fi
+fi
+
+MODE="url"; SRC=""
+case "${1:-}" in
+  --file) [ $# -ge 2 ] || { echo "usage: wiki-ingest-fetch --file <path>" >&2; exit 1; }; MODE="file"; SRC="$2" ;;
+  "" ) echo "usage: wiki-ingest-fetch <url> | --file <path>" >&2; exit 1 ;;
+  -* ) echo "wiki-ingest-fetch: unknown option: $1" >&2; exit 1 ;;
+  * ) SRC="$1" ;;
+esac
+
+# --markdown keeps headings/lists/quotes; extraction strips nav/ads/boilerplate.
+if [ "$MODE" = "file" ]; then
+  out=$("$TRAF" --markdown < "$SRC" 2>/dev/null)
+else
+  out=$("$TRAF" -u "$SRC" --markdown 2>/dev/null)
+fi
+
+# Treat whitespace-only or trivially-short output as "nothing extracted".
+trimmed=$(printf '%s' "$out" | tr -d '[:space:]')
+if [ ${#trimmed} -lt 40 ]; then
+  exit 3
+fi
+printf '%s\n' "$out"
+exit 0
