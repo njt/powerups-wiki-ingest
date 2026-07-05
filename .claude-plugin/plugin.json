@@ -1,0 +1,13 @@
+{
+  "name": "powerups-wiki-ingest",
+  "description": "Fetch a URL (or GitHub repo), analyze it with an LLM, and file it as cross-linked pages in an Obsidian wiki",
+  "version": "1.0.0",
+  "author": {
+    "name": "Nat Torkington",
+    "email": "nat@torkington.com"
+  },
+  "homepage": "https://github.com/njt/powerups-wiki-ingest",
+  "repository": "https://github.com/njt/powerups-wiki-ingest",
+  "license": "MIT",
+  "keywords": ["obsidian", "wiki", "ingest", "knowledge-base", "web-clipping"]
+}

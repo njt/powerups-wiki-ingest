@@ -1,0 +1,16 @@
+{
+  "name": "powerups-wiki-ingest-dev",
+  "description": "Development marketplace for the wiki-ingest plugin",
+  "owner": {
+    "name": "Nat Torkington",
+    "email": "nat@torkington.com"
+  },
+  "plugins": [
+    {
+      "name": "powerups-wiki-ingest",
+      "description": "Fetch a URL (or GitHub repo), analyze it with an LLM, and file it as cross-linked pages in an Obsidian wiki",
+      "version": "1.0.0",
+      "source": "./"
+    }
+  ]
+}
