@@ -428,17 +428,22 @@ fi
 
 # --- Commit --------------------------------------------------------------------
 
-# the LLM is told to delete the prefetched grab when done, but if it failed or
-# forgot, the leftover must not read as "changes" and get merged into main.
-rm -f "$WT/raw/_prefetched.txt"
-
-# The no-changes test also excludes _prefetched.txt: if a past incident ever
-# left one tracked on main, the rm above would stage a deletion and a failed
-# ingest would read as "changes", masking the exit-3 signal.
 git -C "$WT" add -A
-if git -C "$WT" diff --cached --quiet -- . ":(exclude)raw/_prefetched.txt"; then
-  echo "NO CHANGES — fetch likely failed for $INGEST_URL"
+
+# BLOCKED verdict: the LLM deleted the staged raw/$SLUG.md and wrote nothing,
+# so there is no net change → treat as fetch failure (exit 3 → surf). CONTENT
+# verdict: summary/ + topic/ (and index/log) are present → commit all tiers.
+if git -C "$WT" diff --cached --quiet; then
+  echo "NO CHANGES — blocked or empty for $INGEST_URL"
   exit 3
+fi
+# Guard: a CONTENT result must include a summary AND topic file; if only raw/
+# survived (LLM misbehaved), fail loudly rather than committing a half result.
+if [ "${VERBATIM_ONLY:-0}" -ne 1 ]; then
+  if ! ls "$WT/summary/"*.md >/dev/null 2>&1 || ! ls "$WT/topic/"*.md >/dev/null 2>&1; then
+    echo "wiki-ingest-run: incomplete result (missing summary/ or topic/) for $INGEST_URL" >&2
+    exit 1
+  fi
 fi
 if [ "$REPO_MODE" -eq 1 ]; then
   git -C "$WT" commit -m "Ingest (repo analysis): $INGEST_URL" --author="wiki-ingest <noreply@wiki-ingest>"
