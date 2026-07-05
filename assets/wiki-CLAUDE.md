@@ -9,11 +9,22 @@ Wiki/
   CLAUDE.md       — this file (schema, conventions, workflows)
   index.md        — catalog of all wiki pages with one-line summaries
   log.md          — append-only record of ingests, queries, and maintenance
-  raw/            — immutable source documents (drop zone)
-  (topic pages)   — LLM-generated markdown, flat in the wiki root
+  raw/            — verbatim fetched sources (frontmatter + original text)
+  summary/        — concise précis of each source
+  topic/          — LLM-generated analysis pages
 ```
 
-Wiki pages live flat in the wiki root (no subfolders). Obsidian links and tags provide the structure.
+Obsidian links and tags provide the structure; `[[wikilinks]]` resolve by name regardless of folder.
+
+## Three-tier layout
+
+Each source produces up to three artifacts, sharing one slug:
+
+- `raw/<slug>.md` — the **verbatim** fetched source (frontmatter + original text). Written by the pipeline, never rewritten by the model. The `url:` line here is what duplicate detection reads.
+- `summary/<slug>.md` — a concise précis of that source.
+- `topic/<Title>.md` — analysis and synthesis; may draw on several sources. Cross-linked with `[[wikilinks]]` (which resolve by name regardless of folder).
+
+`index.md` and `log.md` stay at the wiki root.
 
 ## Page Format
 
@@ -37,7 +48,18 @@ Use `[[wikilinks]]` for cross-references. Use tags sparingly: `#person`, `#conce
 
 ## raw/ frontmatter
 
-Every raw source file MUST begin with YAML frontmatter, and it MUST include a `url:` line whose value is exactly the ingested URL — the duplicate check depends on it:
+Every `raw/<slug>.md` file holds the **verbatim** fetched body directly under minimal YAML frontmatter. It MUST include a `url:` line whose value is exactly the ingested URL — the duplicate check depends on it. The pipeline writes this file; the model never rewrites it (it only keeps or deletes it):
+
+```markdown
+---
+url: https://example.com/article
+date_fetched: YYYY-MM-DD
+---
+
+(verbatim source body follows, unchanged)
+```
+
+The richer curated frontmatter (title, author, published/fetched dates) lives on the `summary/<slug>.md` précis, not on the raw file:
 
 ```markdown
 ---
