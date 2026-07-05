@@ -10,11 +10,11 @@
 #   --repo            GitHub repo deep-analysis mode (shallow-clones the repo,
 #                     uses the repo-analysis prompt)
 #   --content FILE    pre-fetched content (surf fallback): FILE is copied into
-#                     the worktree as raw/_prefetched.txt and dscldy is told to
+#                     the worktree as raw/_prefetched.txt and the LLM is told to
 #                     read it instead of WebFetching the URL
-#   --force           skip the duplicate check; tell dscldy this is a re-ingest
+#   --force           skip the duplicate check; tell the LLM this is a re-ingest
 #   --date YYYY-MM-DD override today's date (default: date '+%Y-%m-%d')
-#   --dry-run         plumbing test: skip dscldy; write a marker file, merge the
+#   --dry-run         plumbing test: skip the LLM; write a marker file, merge the
 #                     ingest branch into a THROWAWAY branch created from main
 #                     (never into main), verify, clean up. Leaves zero trace.
 #
@@ -41,7 +41,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # main. If it was left on another branch, ingests would silently land there.
 WIKI_HEAD="$(git -C "$WIKI" rev-parse --abbrev-ref HEAD)"
 if [ "$WIKI_HEAD" != "main" ]; then
-  echo "ingest.sh: wiki checkout is on '$WIKI_HEAD', not main — refusing to ingest" >&2
+  echo "wiki-ingest-run: wiki checkout is on '$WIKI_HEAD', not main — refusing to ingest" >&2
   exit 1
 fi
 
@@ -72,7 +72,7 @@ done
 [ -n "$INGEST_URL" ] || usage
 
 if [ -n "$CONTENT_FILE" ] && [ ! -r "$CONTENT_FILE" ]; then
-  echo "ingest.sh: --content file not readable: $CONTENT_FILE" >&2
+  echo "wiki-ingest-run: --content file not readable: $CONTENT_FILE" >&2
   exit 64
 fi
 
@@ -105,7 +105,7 @@ done
 
 if [ "$FORCE" -ne 1 ]; then
   if [ ! -x "$SCRIPT_DIR/wiki-ingest-dupcheck" ]; then
-    echo "ingest.sh: $SCRIPT_DIR/wiki-ingest-dupcheck missing or not executable — refusing to ingest without duplicate check (use --force to override)" >&2
+    echo "wiki-ingest-run: $SCRIPT_DIR/wiki-ingest-dupcheck missing or not executable — refusing to ingest without duplicate check (use --force to override)" >&2
     exit 1
   fi
   if dup_out=$("$SCRIPT_DIR/wiki-ingest-dupcheck" "$INGEST_URL"); then
@@ -165,7 +165,7 @@ merge_with_retry() {
 if [ "$REPO_MODE" -eq 1 ] && [ "$DRY_RUN" -ne 1 ]; then
   case "$INGEST_URL" in
     *github.com/*) : ;;
-    *) echo "ingest.sh: --repo requires a github.com/<owner>/<repo> URL, got: $INGEST_URL" >&2; exit 64 ;;
+    *) echo "wiki-ingest-run: --repo requires a github.com/<owner>/<repo> URL, got: $INGEST_URL" >&2; exit 64 ;;
   esac
   repo_path="${INGEST_URL#*github.com/}"
   repo_path="${repo_path%%\?*}"
@@ -174,13 +174,13 @@ if [ "$REPO_MODE" -eq 1 ] && [ "$DRY_RUN" -ne 1 ]; then
   repo_path="${repo_path%.git}"
   case "$repo_path" in
     */*) : ;;
-    *) echo "ingest.sh: cannot derive owner/repo from URL: $INGEST_URL" >&2; exit 64 ;;
+    *) echo "wiki-ingest-run: cannot derive owner/repo from URL: $INGEST_URL" >&2; exit 64 ;;
   esac
   OWNER="${repo_path%%/*}"
   REPO="${repo_path#*/}"
   REPO="${REPO%%/*}"
   if [ -z "$OWNER" ] || [ -z "$REPO" ]; then
-    echo "ingest.sh: cannot derive owner/repo from URL: $INGEST_URL" >&2
+    echo "wiki-ingest-run: cannot derive owner/repo from URL: $INGEST_URL" >&2
     exit 64
   fi
   # Unique suffix: two concurrent ingests of the same repo must not share a
@@ -235,7 +235,7 @@ if [ "$FORCE" -eq 1 ]; then
 "
 fi
 
-# --- Run dscldy ----------------------------------------------------------------
+# --- Run the LLM CLI ------------------------------------------------------------
 
 # $CLI (default: claude) runs with --allowedTools as a real guardrail — no
 # --dangerously-skip-permissions here. If a user points WIKI_INGEST_CLI at a
@@ -352,7 +352,7 @@ fi
 
 # --- Commit --------------------------------------------------------------------
 
-# dscldy is told to delete the prefetched grab when done, but if it failed or
+# the LLM is told to delete the prefetched grab when done, but if it failed or
 # forgot, the leftover must not read as "changes" and get merged into main.
 rm -f "$WT/raw/_prefetched.txt"
 
