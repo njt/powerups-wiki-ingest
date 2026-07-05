@@ -1,0 +1,107 @@
+#!/bin/bash
+# wiki-ingest-backfill — Phase 3: populate raw/<slug>.md verbatim from each
+# summary/<slug>.md's url:, for the 3-tier migration's empty raw/ tier.
+#
+# STRICTLY ADDITIVE: only ever writes raw/<slug>.md and appends to
+# ingest-queue.md. Never creates, edits, or deletes any summary/ or topic/ file.
+# A failed/thin fetch leaves the summary untouched and just queues the URL.
+#
+# Idempotent/resumable: skips any slug that already has raw/<slug>.md.
+# Length-gated: extractions shorter than MINLEN chars go to the queue, not raw/.
+# Polite: honest UA (via wiki-ingest-fetch's config) + per-domain throttling
+# (worklist sorted by host; >=THROTTLE_SAME s between same-host fetches).
+#
+# Usage: WIKI_PATH=<wiki> wiki-ingest-backfill [--limit N] [--commit-every N]
+# Targets bash 3.2 (macOS /bin/bash).
+set -u
+
+WIKI="${WIKI_PATH:-}"
+if [ -z "$WIKI" ] || [ ! -d "$WIKI" ]; then
+  echo "wiki-ingest-backfill: set WIKI_PATH to your wiki directory" >&2; exit 64
+fi
+SELF="$(cd "$(dirname "$0")" && pwd)"
+FETCH="$SELF/wiki-ingest-fetch"
+QUEUE="$WIKI/ingest-queue.md"
+TODAY="$(date '+%Y-%m-%d')"
+
+MINLEN=500
+THROTTLE_SAME=5     # seconds between two fetches to the same host
+THROTTLE_DIFF=1     # seconds between different hosts
+LIMIT=0             # 0 = no limit
+COMMIT_EVERY=50
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --limit)        LIMIT="$2"; shift 2 ;;
+    --commit-every) COMMIT_EVERY="$2"; shift 2 ;;
+    *) echo "wiki-ingest-backfill: unknown arg: $1" >&2; exit 64 ;;
+  esac
+done
+
+host_of() {  # strip protocol, take up to first '/'
+  local u="$1"; u="${u#http://}"; u="${u#https://}"; u="${u#www.}"; printf '%s' "${u%%/*}"
+}
+
+# --- Build the worklist: slug<TAB>url<TAB>host, only where raw/ is missing -----
+work=$(mktemp)
+for f in "$WIKI"/summary/*.md; do
+  [ -e "$f" ] || continue
+  slug=$(basename "$f" .md)
+  [ -f "$WIKI/raw/$slug.md" ] && continue            # already backfilled → skip
+  url=$(awk 'FNR==1{fm=/^---[ \t\r]*$/?1:0;next} fm&&/^---[ \t\r]*$/{exit} fm&&/^url:[ \t]*/{sub(/^url:[ \t]*/,"");sub(/[ \t\r]+$/,"");print;exit}' "$f")
+  # Strip surrounding quotes (frontmatter urls are inconsistently quoted).
+  url="${url%\"}"; url="${url#\"}"; url="${url%\'}"; url="${url#\'}"
+  [ -n "$url" ] || { printf -- '- %s — no url: in summary, cannot backfill (%s)\n' "$slug" "$TODAY" >> "$QUEUE"; continue; }
+  printf '%s\t%s\t%s\n' "$slug" "$url" "$(host_of "$url")" >> "$work"
+done
+
+# Sort by host so same-host items are adjacent (enables per-domain throttling).
+sorted=$(mktemp); sort -t"$(printf '\t')" -k3,3 "$work" > "$sorted"; rm -f "$work"
+total=$(wc -l < "$sorted" | tr -d ' ')
+echo "backfill: $total sources need raw/ (MINLEN=$MINLEN, throttle same/diff=${THROTTLE_SAME}/${THROTTLE_DIFF}s)"
+
+# --- Fetch loop ---------------------------------------------------------------
+prev_host=""; done_ok=0; queued=0; n=0
+commit_batch() {
+  git -C "$WIKI" add raw/ ingest-queue.md 2>/dev/null
+  git -C "$WIKI" diff --cached --quiet 2>/dev/null || \
+    git -C "$WIKI" commit -q -m "Backfill verbatim raw/ (batch through $done_ok ok / $queued queued)" 2>/dev/null
+}
+
+while IFS="$(printf '\t')" read -r slug url host; do
+  [ -n "$slug" ] || continue
+  n=$((n + 1))
+  [ "$LIMIT" -gt 0 ] && [ "$n" -gt "$LIMIT" ] && { n=$((n-1)); break; }
+
+  # Throttle: sleep longer between same-host hits.
+  if [ "$host" = "$prev_host" ]; then sleep "$THROTTLE_SAME"; else sleep "$THROTTLE_DIFF"; fi
+  prev_host="$host"
+
+  body=$("$FETCH" "$url" 2>/dev/null); frc=$?
+  if [ "$frc" -eq 1 ]; then
+    echo "  ABORT: fetch helper error (trafilatura?) — stopping" >&2; break
+  fi
+  len=$(printf '%s' "$body" | tr -d '[:space:]' | wc -c | tr -d ' ')
+  if [ "$len" -lt "$MINLEN" ]; then
+    printf -- '- %s — backfill thin/empty (%s chars) via HTTP; retry with surf (%s) %s\n' "$url" "$len" "$slug" "$TODAY" >> "$QUEUE"
+    queued=$((queued + 1))
+  else
+    {
+      printf -- '---\n'
+      printf 'url: %s\n' "$url"
+      printf 'date_fetched: %s\n' "$TODAY"
+      printf 'backfilled: true\n'
+      printf -- '---\n\n'
+      printf '%s\n' "$body"
+    } > "$WIKI/raw/$slug.md"
+    done_ok=$((done_ok + 1))
+  fi
+
+  if [ $((n % COMMIT_EVERY)) -eq 0 ]; then
+    echo "  … $n/$total ($done_ok ok, $queued queued)"; commit_batch
+  fi
+done < "$sorted"
+rm -f "$sorted"
+
+commit_batch
+echo "BACKFILL DONE: $done_ok verbatim written, $queued queued (of $n processed / $total total)"

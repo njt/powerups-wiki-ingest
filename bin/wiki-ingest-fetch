@@ -30,11 +30,22 @@ case "${1:-}" in
   * ) SRC="$1" ;;
 esac
 
+# Honest, identifiable User-Agent (env-overridable). curl does the fetch —
+# explicit UA + timeout + redirect handling — and trafilatura does readability
+# extraction from the returned HTML. This gives us full UA control (trafilatura's
+# --config-file replaces its whole settings schema, too fragile) and empirically
+# succeeds on sites that block trafilatura's own default fetch.
+UA="${WIKI_INGEST_UA:-wiki-ingest/1.0 (+https://github.com/njt/powerups-wiki-ingest; personal Obsidian wiki archiver)}"
+TIMEOUT="${WIKI_INGEST_TIMEOUT:-30}"
+
 # --markdown keeps headings/lists/quotes; extraction strips nav/ads/boilerplate.
 if [ "$MODE" = "file" ]; then
   out=$("$TRAF" --markdown < "$SRC" 2>/dev/null)
 else
-  out=$("$TRAF" -u "$SRC" --markdown 2>/dev/null)
+  if ! command -v curl >/dev/null 2>&1; then
+    echo "wiki-ingest-fetch: curl not found" >&2; exit 1
+  fi
+  out=$(curl -fsSL -A "$UA" --max-time "$TIMEOUT" "$SRC" 2>/dev/null | "$TRAF" --markdown 2>/dev/null)
 fi
 
 # Treat whitespace-only or trivially-short output as "nothing extracted".
