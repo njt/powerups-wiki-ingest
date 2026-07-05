@@ -9,9 +9,9 @@
 # Options:
 #   --repo            GitHub repo deep-analysis mode (shallow-clones the repo,
 #                     uses the repo-analysis prompt)
-#   --content FILE    pre-fetched content (surf fallback): FILE is copied into
-#                     the worktree as raw/_prefetched.txt and the LLM is told to
-#                     read it instead of WebFetching the URL
+#   --content FILE    pre-fetched content (surf fallback): FILE becomes the
+#                     verbatim source (extracted if it is HTML, else used as-is)
+#                     staged to raw/<slug>.md; the script does not fetch the URL
 #   --force           skip the duplicate check; tell the LLM this is a re-ingest
 #   --note TEXT       append TEXT to the LLM prompt (source-type hints, etc.)
 #   --date YYYY-MM-DD override today's date (default: date '+%Y-%m-%d')
