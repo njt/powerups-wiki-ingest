@@ -131,11 +131,12 @@ if [ "$FORCE" -ne 1 ]; then
     echo "wiki-ingest-run: $SCRIPT_DIR/wiki-ingest-dupcheck missing or not executable — refusing to ingest without duplicate check (use --force to override)" >&2
     exit 1
   fi
-  if dup_out=$("$SCRIPT_DIR/wiki-ingest-dupcheck" "$INGEST_URL"); then
-    echo "DUPLICATE — already ingested:"
-    echo "$dup_out"
-    exit 2
-  fi
+  set +e; dup_out=$("$SCRIPT_DIR/wiki-ingest-dupcheck" "$INGEST_URL"); drc=$?; set -e
+  case "$drc" in
+    0) echo "DUPLICATE — already ingested:"; echo "$dup_out"; exit 2 ;;
+    1) : ;;  # clean — proceed
+    *) echo "wiki-ingest-run: dupcheck failed (rc=$drc) for $INGEST_URL — refusing to risk a duplicate" >&2; exit 1 ;;
+  esac
 fi
 
 # --- Worktree setup -----------------------------------------------------------
@@ -223,11 +224,23 @@ SLUG=""
 if [ "$DRY_RUN" -ne 1 ]; then
   SLUG=$(url_slug "$INGEST_URL")
   FETCH="$SCRIPT_DIR/wiki-ingest-fetch"
+  if [ ! -x "$FETCH" ]; then
+    echo "wiki-ingest-run: $FETCH missing or not executable" >&2
+    exit 1
+  fi
   body=""
   if [ "$REPO_MODE" -eq 1 ]; then
-    # Repo verbatim = the README (first match, case-insensitive).
+    # Repo verbatim = the README (first match, case-insensitive). A repo with no
+    # README still cloned fine (real content) — use a placeholder so it isn't
+    # misread as a failed fetch and routed to surf.
     readme=$(find "$CLONE_DIR" -maxdepth 1 -iname 'readme*' 2>/dev/null | head -1)
-    [ -n "$readme" ] && body=$(cat "$readme")
+    if [ -n "$readme" ]; then
+      body=$(cat "$readme")
+    else
+      body="# $INGEST_URL
+
+(No README found in the repository; see the topic page's analysis of the cloned source.)"
+    fi
   elif [ -n "$CONTENT_FILE" ]; then
     # surf grab (already text/markdown) — extract if it is HTML, else pass through.
     if head -c 200 "$CONTENT_FILE" | grep -qi '<html\|<!doctype'; then

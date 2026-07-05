@@ -49,6 +49,7 @@ fi
 [ -f "$WIKI/CLAUDE.md" ] || cp "$TEMPLATE" "$WIKI/CLAUDE.md"
 [ -f "$WIKI/index.md" ]  || printf '# Wiki Index\n\n' > "$WIKI/index.md"
 [ -f "$WIKI/log.md" ]    || printf '# Wiki Log\n\n' > "$WIKI/log.md"
+[ -f "$WIKI/ingest-queue.md" ] || printf '# Ingest Queue\n\nURLs that could not be fetched cleanly. Retry with surf or handle manually.\n' > "$WIKI/ingest-queue.md"
 [ -f "$WIKI/raw/.gitkeep" ]     || : > "$WIKI/raw/.gitkeep"
 [ -f "$WIKI/summary/.gitkeep" ] || : > "$WIKI/summary/.gitkeep"
 [ -f "$WIKI/topic/.gitkeep" ]   || : > "$WIKI/topic/.gitkeep"

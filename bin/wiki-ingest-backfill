@@ -37,6 +37,7 @@ while [ $# -gt 0 ]; do
     *) echo "wiki-ingest-backfill: unknown arg: $1" >&2; exit 64 ;;
   esac
 done
+case "$COMMIT_EVERY" in ''|*[!0-9]*|0) COMMIT_EVERY=50 ;; esac  # avoid mod-by-zero
 
 host_of() {  # strip protocol, take up to first '/'
   local u="$1"; u="${u#http://}"; u="${u#https://}"; u="${u#www.}"; printf '%s' "${u%%/*}"
@@ -63,7 +64,11 @@ echo "backfill: $total sources need raw/ (MINLEN=$MINLEN, throttle same/diff=${T
 # --- Fetch loop ---------------------------------------------------------------
 prev_host=""; done_ok=0; queued=0; n=0
 commit_batch() {
-  git -C "$WIKI" add raw/ ingest-queue.md 2>/dev/null
+  # Stage separately: 'git add raw/ ingest-queue.md' fails atomically (stages
+  # NOTHING) if ingest-queue.md doesn't exist yet — which would silently drop
+  # all raw/ writes on a fresh wiki where nothing has been queued.
+  git -C "$WIKI" add raw/ 2>/dev/null
+  [ -f "$QUEUE" ] && git -C "$WIKI" add ingest-queue.md 2>/dev/null
   git -C "$WIKI" diff --cached --quiet 2>/dev/null || \
     git -C "$WIKI" commit -q -m "Backfill verbatim raw/ (batch through $done_ok ok / $queued queued)" 2>/dev/null
 }

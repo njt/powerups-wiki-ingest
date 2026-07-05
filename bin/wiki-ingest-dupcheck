@@ -49,7 +49,7 @@ canonicalize() {
       oldIFS=$IFS; IFS='&'; set -f
       for p in $query; do
         case "$p" in
-          utm_*=*|fbclid=*|gclid=*|ref=*|ref_src=*|s=2[0-9]|si=*) ;;
+          utm_*=*|fbclid=*|gclid=*|ref=*|ref_src=*|s=[0-9]*|si=*) ;;
           *) if [ -z "$newq" ]; then newq="$p"; else newq="$newq&$p"; fi ;;
         esac
       done
