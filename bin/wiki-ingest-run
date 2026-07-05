@@ -231,12 +231,15 @@ if [ "$DRY_RUN" -ne 1 ]; then
   elif [ -n "$CONTENT_FILE" ]; then
     # surf grab (already text/markdown) — extract if it is HTML, else pass through.
     if head -c 200 "$CONTENT_FILE" | grep -qi '<html\|<!doctype'; then
-      body=$("$FETCH" --file "$CONTENT_FILE" 2>/dev/null)
+      # || true: the helper exits 3 on empty extraction; under set -e a bare
+      # assignment would abort here, bypassing the NO CONTENT check below.
+      body=$("$FETCH" --file "$CONTENT_FILE" 2>/dev/null) || true
     else
       body=$(cat "$CONTENT_FILE")
     fi
   else
-    body=$("$FETCH" "$INGEST_URL" 2>/dev/null)
+    # || true: see above — let the length check own the empty-fetch → exit 3 path.
+    body=$("$FETCH" "$INGEST_URL" 2>/dev/null) || true
   fi
 
   # Empty extraction = nothing to archive → fetch failure → exit 3 (→ surf).
