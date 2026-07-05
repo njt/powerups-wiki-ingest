@@ -1,0 +1,112 @@
+#!/bin/bash
+# wiki-ingest-dupcheck <url> — deterministically detect whether a URL was already
+# ingested into the wiki.
+#
+# Canonicalizes the given URL and every `url:` frontmatter line in
+# $WIKI/raw/*.md the same way, then compares for exact string equality
+# (no regex matching against raw URL text).
+#
+# Exit codes:
+#   0  duplicate found (prints matching raw file path(s) + title/date_fetched)
+#   1  no duplicate (prints nothing)
+#   64 usage error
+#
+# Targets bash 3.2 (macOS /bin/bash). Runs non-interactively (launchd-safe).
+
+set -u
+
+WIKI="${WIKI_PATH:-}"
+if [ -z "$WIKI" ] || [ ! -d "$WIKI" ]; then
+  echo "wiki-ingest-dupcheck: set WIKI_PATH to your wiki directory (currently: '${WIKI_PATH:-unset}')" >&2
+  exit 64
+fi
+
+if [ $# -ne 1 ] || [ -z "$1" ]; then
+  echo "usage: wiki-ingest-dupcheck <url>" >&2
+  exit 64
+fi
+
+# Canonicalize a URL into the global CANON (no subshell — this runs in a
+# tight loop over ~600 entries and command substitution would fork per call).
+# Rules: strip protocol, leading www., #fragment, tracking query params
+# (utm_* etc. — meaningful queries like youtube watch?v= are kept), trailing /,
+# trailing .git; lowercase the host; fold the x.com / twitter.com / xcancel.com
+# hostname equivalence class into one form (X links get rewritten to xcancel
+# before ingest).
+canonicalize() {
+  local u="$1" host rest base query newq p oldIFS
+  u="${u#http://}"
+  u="${u#https://}"
+  u="${u#www.}"
+  u="${u%%#*}"
+  case "$u" in
+    *\?*)
+      base="${u%%\?*}"
+      query="${u#*\?}"
+      newq=""
+      oldIFS=$IFS; IFS='&'; set -f
+      for p in $query; do
+        case "$p" in
+          utm_*=*|fbclid=*|gclid=*|ref=*|ref_src=*|s=2[0-9]|si=*) ;;
+          *) if [ -z "$newq" ]; then newq="$p"; else newq="$newq&$p"; fi ;;
+        esac
+      done
+      set +f; IFS=$oldIFS
+      if [ -n "$newq" ]; then u="$base?$newq"; else u="$base"; fi
+      ;;
+  esac
+  u="${u%/}"
+  u="${u%.git}"
+  u="${u%/}"
+  # Hostnames are case-insensitive; paths are not. Fork only on the rare
+  # uppercase host.
+  host="${u%%/*}"
+  rest=""
+  case "$u" in */*) rest="/${u#*/}" ;; esac
+  case "$host" in
+    *[A-Z]*) host=$(printf '%s' "$host" | tr '[:upper:]' '[:lower:]') ;;
+  esac
+  u="$host$rest"
+  case "$u" in
+    x.com/*)       u="xcancel.com/${u#x.com/}" ;;
+    twitter.com/*) u="xcancel.com/${u#twitter.com/}" ;;
+    x.com)         u="xcancel.com" ;;
+    twitter.com)   u="xcancel.com" ;;
+  esac
+  CANON="$u"
+}
+
+canonicalize "$1"
+TARGET="$CANON"
+
+[ -d "$WIKI/raw" ] || exit 1
+
+found=0
+
+# Single awk pass over all raw files: emit "path<TAB>url-value" for every
+# `url:` line inside the YAML frontmatter block. No per-file process spawns.
+while IFS=$'\t' read -r file url; do
+  [ -n "$url" ] || continue
+  # Strip surrounding quotes, if any
+  url="${url%\"}"; url="${url#\"}"
+  url="${url%\'}"; url="${url#\'}"
+  canonicalize "$url"
+  if [ "$CANON" = "$TARGET" ]; then
+    found=1
+    echo "$file"
+    awk 'FNR==1 { if (!/^---[ \t\r]*$/) exit; next }
+         /^---[ \t\r]*$/ { exit }
+         /^title:/ || /^date_fetched:/ { print "  " $0 }' "$file"
+  fi
+done < <(awk '
+  FNR==1 { fm = /^---[ \t\r]*$/ ? 1 : 0; next }
+  fm && /^---[ \t\r]*$/ { fm = 0; next }
+  fm && /^url:[ \t]*/ {
+    line = $0
+    sub(/^url:[ \t]*/, "", line)
+    sub(/[ \t\r]+$/, "", line)
+    printf "%s\t%s\n", FILENAME, line
+  }' "$WIKI"/raw/*.md 2>/dev/null)
+
+[ "$found" -eq 1 ] && exit 0
+exit 1
