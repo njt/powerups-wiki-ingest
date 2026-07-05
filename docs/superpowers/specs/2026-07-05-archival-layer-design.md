@@ -88,6 +88,20 @@ for each source lacking a raw/<slug>.md:
 - Report hit-rate; expect a meaningful miss tail for older/dead links.
 - Because `summary/` and `topic/` are never written by backfill, even a bug cannot lose them (and they remain in git history regardless).
 
+### Politeness & rate-limiting (backfill must not hammer sites)
+
+700 sequential fetches can trip rate limits or look like abuse. The backfill runner must:
+
+- **Group by domain and space same-domain requests.** Sort the worklist so requests to one host are spread out, and enforce a **minimum per-domain interval** (e.g. ≥5s between two fetches to the same host); different hosts can proceed back-to-back within a small global delay (e.g. ~1s).
+- **Send a descriptive, honest User-Agent** (identifying it as a personal wiki archiver with a contact), not a spoofed browser string — so an operator who notices can reach out rather than hard-block.
+- **Respect throttling signals:** on HTTP 429 or 503 (and `Retry-After` when present), exponentially back off and retry that host later; after N failures for a host, defer the rest of that host's URLs to a later pass rather than pounding it.
+- **Cap concurrency at 1** for the HTTP pass (sequential is fine — this is a one-time catch-up), and keep the surf pass sequential (single browser tab) as today.
+- **Checkpoint progress** so an interrupted/backed-off run resumes without re-fetching what already succeeded (the "skip sources with a raw/ file" idempotence covers this).
+
+*Load-bearing for Phase 3:* verify how trafilatura sets a custom User-Agent and download throttle (config file vs env vs flag) before relying on it; if it can't be configured cleanly, do the fetch with `curl` (UA + delays under our control) and pipe the HTML into trafilatura for extraction.
+
+The forward pipeline (Phase 1) fetches one URL per invocation, so hammering is not a concern there; the same honest User-Agent should still be used.
+
 ## Sequencing & rationale
 
 Phase 1 builds the fetch+extract module and locks the three-dir layout and schema. Phase 2 reshapes existing files into it. Phase 3 reuses Phase 1's module to populate `raw/`. Each phase is a separate spec→plan→implement cycle with a review checkpoint. If backfill hit-rates disappoint, Phases 1–2 still stand alone.
