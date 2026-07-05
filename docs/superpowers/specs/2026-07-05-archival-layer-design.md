@@ -21,7 +21,7 @@ Today only two artifacts exist and neither is verbatim: `raw/<slug>.md` holds a 
 3. **Verbatim fidelity = cleaned article Markdown** (readability-extracted; nav/ads/boilerplate stripped). Repo sources archive the README (already Markdown).
 4. **Backfill = two-pass:** HTTP-fetch+extract, then surf-retry the failures, then log the remainder to `ingest-queue.md`.
 5. **Content-validity gate = LLM verdict only.** No deterministic pre-filter, no forced-surf domain list. Every fetch's text is judged CONTENT/BLOCKED by the ingest LLM.
-6. **Extractor tool:** `trafilatura` (Python, `pip install`) — fetches and readability-extracts to Markdown. *Load-bearing: verify output quality and that pip install is acceptable before Phase 1 build.*
+6. **Extractor tool:** `trafilatura` (Python) — fetches and readability-extracts to Markdown. **Validated 2026-07-05:** installed via `pipx install trafilatura` (CLI at `~/.local/bin/trafilatura`; Homebrew Python is PEP-668 externally-managed, so pipx, not `pip --user`). On a clean blog it produced clean structured Markdown (headings/bold/lists/blockquotes); on a Substack that *failed the LLM's WebFetch earlier* it retrieved the full article (direct HTTP+extraction beats WebFetch on server-rendered sites → likely higher backfill hit-rate); on true JS-only SPAs (x.com, reddit) it returned **0 bytes** (cheaply gate-able).
 
 ## Why fetching moves out of the LLM
 
@@ -98,7 +98,7 @@ Phase 1 builds the fetch+extract module and locks the three-dir layout and schem
 - Re-generating existing summaries/analyses (Phase 2 preserves them as-is; only structure moves).
 - Any change to the wiki *content* repo's remote/hosting.
 
-## Load-bearing items to validate before/within Phase 1
+## Load-bearing items
 
-- `trafilatura` install path and output quality on a sample of real wiki URLs (does it yield clean Markdown; how does it behave on the JS-shell false-success cases the gate must catch).
-- That the empty-output → exit-3 → surf mechanism still holds when raw/ is pre-staged by the script (the script must treat "LLM deleted raw/ and wrote nothing" as exit 3, not "raw/ present = changes").
+- ✅ **trafilatura install + output quality — VALIDATED 2026-07-05** (see decision 6). pipx install; clean Markdown on real pages; 0 bytes on JS-only SPAs; beats WebFetch on Substack. Implication: an **empty/near-empty fetch is short-circuited straight to surf** (nothing to hand the LLM), which is not a content-verdict — it's "we got nothing." This does not violate the LLM-verdict-only decision.
+- ⏳ **exit-3 inversion (to prove in Phase 1's tests):** when the script pre-stages `raw/<slug>.md` and the LLM judges BLOCKED (deletes raw/, writes nothing), the script must treat the net-empty result as exit 3 (→ surf), NOT as "raw/ present = changes." Design is settled; a Phase 1 test must assert a BLOCKED verdict yields exit 3 and leaves no `raw/` file committed.
