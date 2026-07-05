@@ -1,0 +1,392 @@
+#!/bin/bash
+# wiki-ingest-run [options] <url> — ingest a URL into the Obsidian wiki via an LLM CLI.
+#
+# Each ingest runs in a git worktree in /tmp. the LLM CLI does all the work (raw
+# file, wiki page, index, log), the script commits to a branch and merges back
+# to main. The merge=union gitattribute on index.md and log.md prevents merge
+# conflicts, so parallel ingests are safe by design.
+#
+# Options:
+#   --repo            GitHub repo deep-analysis mode (shallow-clones the repo,
+#                     uses the repo-analysis prompt)
+#   --content FILE    pre-fetched content (surf fallback): FILE is copied into
+#                     the worktree as raw/_prefetched.txt and dscldy is told to
+#                     read it instead of WebFetching the URL
+#   --force           skip the duplicate check; tell dscldy this is a re-ingest
+#   --date YYYY-MM-DD override today's date (default: date '+%Y-%m-%d')
+#   --dry-run         plumbing test: skip dscldy; write a marker file, merge the
+#                     ingest branch into a THROWAWAY branch created from main
+#                     (never into main), verify, clean up. Leaves zero trace.
+#
+# Exit codes:
+#   0  ingested (or dry-run OK)
+#   2  duplicate — already ingested (use --force to re-ingest)
+#   3  no changes — fetch likely failed (orchestrator should retry with surf)
+#   64 usage error
+#   1  other failure
+#
+# Targets bash 3.2 (macOS /bin/bash). Runs non-interactively (launchd-safe).
+
+set -eu
+
+WIKI="${WIKI_PATH:-}"
+if [ -z "$WIKI" ] || [ ! -d "$WIKI" ]; then
+  echo "wiki-ingest-run: set WIKI_PATH to your wiki directory (currently: '${WIKI_PATH:-unset}'). Run wiki-ingest-setup first if you haven't created it." >&2
+  exit 64
+fi
+CLI="${WIKI_INGEST_CLI:-claude}"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+# The merge, push, and branch reaping below all assume the wiki checkout is on
+# main. If it was left on another branch, ingests would silently land there.
+WIKI_HEAD="$(git -C "$WIKI" rev-parse --abbrev-ref HEAD)"
+if [ "$WIKI_HEAD" != "main" ]; then
+  echo "ingest.sh: wiki checkout is on '$WIKI_HEAD', not main — refusing to ingest" >&2
+  exit 1
+fi
+
+usage() {
+  echo "usage: wiki-ingest-run [--repo] [--content FILE] [--force] [--date YYYY-MM-DD] [--dry-run] <url>" >&2
+  exit 64
+}
+
+REPO_MODE=0
+CONTENT_FILE=""
+FORCE=0
+DRY_RUN=0
+INGEST_DATE="$(date '+%Y-%m-%d')"
+INGEST_URL=""
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --repo)    REPO_MODE=1; shift ;;
+    --content) [ $# -ge 2 ] || usage; CONTENT_FILE="$2"; shift 2 ;;
+    --force)   FORCE=1; shift ;;
+    --date)    [ $# -ge 2 ] || usage; INGEST_DATE="$2"; shift 2 ;;
+    --dry-run) DRY_RUN=1; shift ;;
+    --)        shift; [ $# -eq 1 ] || usage; INGEST_URL="$1"; shift ;;
+    -*)        usage ;;
+    *)         [ -z "$INGEST_URL" ] || usage; INGEST_URL="$1"; shift ;;
+  esac
+done
+[ -n "$INGEST_URL" ] || usage
+
+if [ -n "$CONTENT_FILE" ] && [ ! -r "$CONTENT_FILE" ]; then
+  echo "ingest.sh: --content file not readable: $CONTENT_FILE" >&2
+  exit 64
+fi
+
+# --- Reap stale state from previous runs ------------------------------------
+
+git -C "$WIKI" worktree prune
+
+# Delete fully-merged ingest-* branches (leftovers from clean runs).
+git -C "$WIKI" branch --merged main --list 'ingest-*' | sed 's/^[*+ ]*//' | \
+while read -r b; do
+  [ -n "$b" ] || continue
+  git -C "$WIKI" branch -d "$b" >/dev/null 2>&1 || true
+done
+
+# Force-delete ingest-* branches whose tip commit is older than 7 days.
+# Unmerged ingest branches are retryable failures; after a week they're junk.
+now=$(date +%s)
+week_ago=$((now - 7 * 24 * 3600))
+git -C "$WIKI" branch --list 'ingest-*' | sed 's/^[*+ ]*//' | \
+while read -r b; do
+  [ -n "$b" ] || continue
+  tip=$(git -C "$WIKI" log -1 --format=%ct "$b" 2>/dev/null) || continue
+  case "$tip" in ''|*[!0-9]*) continue ;; esac
+  if [ "$tip" -lt "$week_ago" ]; then
+    git -C "$WIKI" branch -D "$b" >/dev/null 2>&1 || true
+  fi
+done
+
+# --- Duplicate check ----------------------------------------------------------
+
+if [ "$FORCE" -ne 1 ]; then
+  if [ ! -x "$SCRIPT_DIR/wiki-ingest-dupcheck" ]; then
+    echo "ingest.sh: $SCRIPT_DIR/wiki-ingest-dupcheck missing or not executable — refusing to ingest without duplicate check (use --force to override)" >&2
+    exit 1
+  fi
+  if dup_out=$("$SCRIPT_DIR/wiki-ingest-dupcheck" "$INGEST_URL"); then
+    echo "DUPLICATE — already ingested:"
+    echo "$dup_out"
+    exit 2
+  fi
+fi
+
+# --- Worktree setup -----------------------------------------------------------
+
+BRANCH="ingest-$(date +%s)-$$-$RANDOM"
+WT="/tmp/wiki-$BRANCH"
+CLONE_DIR=""
+THROWAWAY=""
+TWT=""
+
+cleanup() {
+  git -C "$WIKI" worktree remove --force "$WT" 2>/dev/null || true
+  if [ -n "$TWT" ]; then
+    git -C "$WIKI" worktree remove --force "$TWT" 2>/dev/null || true
+  fi
+  if [ -n "$THROWAWAY" ]; then
+    git -C "$WIKI" branch -D "$THROWAWAY" 2>/dev/null || true
+  fi
+  if [ "$DRY_RUN" -eq 1 ]; then
+    # Dry-run branches were only merged into the throwaway branch, so -d
+    # would refuse; they must never survive.
+    git -C "$WIKI" branch -D "$BRANCH" 2>/dev/null || true
+  else
+    # -d only deletes if merged: a failed ingest's branch survives for retry
+    # (and is reaped after 7 days).
+    git -C "$WIKI" branch -d "$BRANCH" 2>/dev/null || true
+  fi
+  if [ -n "$CLONE_DIR" ]; then
+    rm -rf "$CLONE_DIR"
+  fi
+}
+trap cleanup EXIT
+
+# Merge $BRANCH into the checkout at $1, retrying up to 5 times. Parallel
+# ingests contend on index.lock — abort, sleep, retry handles that.
+merge_with_retry() {
+  local dir="$1" attempt=1
+  while [ "$attempt" -le 5 ]; do
+    if git -C "$dir" merge "$BRANCH" --no-edit; then
+      return 0
+    fi
+    git -C "$dir" merge --abort 2>/dev/null || true
+    sleep 3
+    attempt=$((attempt + 1))
+  done
+  return 1
+}
+
+# --repo mode: shallow-clone the repo (structure and code, not full history).
+if [ "$REPO_MODE" -eq 1 ] && [ "$DRY_RUN" -ne 1 ]; then
+  case "$INGEST_URL" in
+    *github.com/*) : ;;
+    *) echo "ingest.sh: --repo requires a github.com/<owner>/<repo> URL, got: $INGEST_URL" >&2; exit 64 ;;
+  esac
+  repo_path="${INGEST_URL#*github.com/}"
+  repo_path="${repo_path%%\?*}"
+  repo_path="${repo_path%%#*}"
+  repo_path="${repo_path%/}"
+  repo_path="${repo_path%.git}"
+  case "$repo_path" in
+    */*) : ;;
+    *) echo "ingest.sh: cannot derive owner/repo from URL: $INGEST_URL" >&2; exit 64 ;;
+  esac
+  OWNER="${repo_path%%/*}"
+  REPO="${repo_path#*/}"
+  REPO="${REPO%%/*}"
+  if [ -z "$OWNER" ] || [ -z "$REPO" ]; then
+    echo "ingest.sh: cannot derive owner/repo from URL: $INGEST_URL" >&2
+    exit 64
+  fi
+  # Unique suffix: two concurrent ingests of the same repo must not share a
+  # clone dir. Clone the reconstructed canonical URL, never the raw input —
+  # deep links (/tree/..., ?tab=...) would fail the clone, and raw input in a
+  # clone target is an ext::/upload-pack command-injection surface.
+  CLONE_DIR="/tmp/repo-$OWNER--$REPO-$$-$RANDOM"
+  rm -rf "$CLONE_DIR"
+  GIT_TERMINAL_PROMPT=0 git clone --depth 1 "https://github.com/$OWNER/$REPO" "$CLONE_DIR"
+fi
+
+git -C "$WIKI" worktree add "$WT" -b "$BRANCH" main
+
+mkdir -p "$WT/raw"
+if [ -n "$CONTENT_FILE" ]; then
+  cp "$CONTENT_FILE" "$WT/raw/_prefetched.txt"
+fi
+
+# --- Dry run: exercise the commit + merge plumbing, never touching main -------
+
+if [ "$DRY_RUN" -eq 1 ]; then
+  echo "dry-run marker for $INGEST_URL" > "$WT/raw/_dryrun-$BRANCH.md"
+  git -C "$WT" add -A
+  git -C "$WT" commit --quiet -m "Dry-run ingest test: $INGEST_URL" \
+    --author="wiki-ingest <noreply@wiki-ingest>"
+
+  THROWAWAY="throwaway-$BRANCH"
+  TWT="/tmp/wiki-$THROWAWAY"
+  git -C "$WIKI" worktree add "$TWT" -b "$THROWAWAY" main
+
+  if ! merge_with_retry "$TWT"; then
+    echo "DRY-RUN FAILED: merge into throwaway branch failed for $INGEST_URL" >&2
+    exit 1
+  fi
+  if [ ! -f "$TWT/raw/_dryrun-$BRANCH.md" ]; then
+    echo "DRY-RUN FAILED: marker file missing after merge into throwaway branch" >&2
+    exit 1
+  fi
+  echo "DRY-RUN OK: $INGEST_URL (branch $BRANCH merged into $THROWAWAY, marker verified, cleaning up)"
+  exit 0  # trap removes both worktrees and both branches
+fi
+
+# --- Build prompt extras -------------------------------------------------------
+
+EXTRA_NOTES=""
+if [ -n "$CONTENT_FILE" ]; then
+  EXTRA_NOTES="The page content has already been fetched via browser automation and saved to raw/_prefetched.txt in the wiki directory. Read that file FIRST. Do NOT try to WebFetch the URL. Delete raw/_prefetched.txt when done.
+"
+fi
+if [ "$FORCE" -eq 1 ]; then
+  EXTRA_NOTES="${EXTRA_NOTES}This is a re-ingest — update the existing raw file and wiki page, do not duplicate them.
+"
+fi
+
+# --- Run dscldy ----------------------------------------------------------------
+
+# $CLI (default: claude) runs with --allowedTools as a real guardrail — no
+# --dangerously-skip-permissions here. If a user points WIKI_INGEST_CLI at a
+# wrapper that adds skip-permissions internally, that is their choice.
+#
+# An LLM failure must exit 1: exit codes 2 and 3 are reserved contract values
+# (duplicate / no-changes) and the CLI's own exit code must never be mistaken
+# for them.
+llm_failed() {
+  echo "wiki-ingest-run: LLM CLI ($CLI) failed for $INGEST_URL" >&2
+  exit 1
+}
+
+# $CLI MUST run with the worktree as CWD: with the caller's CWD it picks up
+# whatever project CLAUDE.md lives there and can start recursively
+# orchestrating the pipeline (observed 2026-07-05). The in-prompt guardrails
+# below reinforce this.
+if [ "$REPO_MODE" -eq 1 ]; then
+  cat <<INGEST_EOF | (cd "$WT" && "$CLI" -p --allowedTools "Read,Write,Edit,Bash,WebFetch,WebSearch" --add-dir "$WT") || llm_failed
+You are ingesting a GitHub repository into an Obsidian wiki. You have the full repo cloned locally for deep analysis.
+
+Wiki location: $WT
+Cloned repo: $CLONE_DIR
+Repo URL: $INGEST_URL
+
+The wiki CLAUDE.md has been loaded via --add-dir and defines page format and conventions. Follow it.
+
+IMPORTANT: You are one step inside a larger pipeline. Work ONLY inside $WT (plus reading $CLONE_DIR). Do NOT run the wiki-ingest scripts, do NOT use surf or any browser automation, and do NOT run git branch/commit/merge/push — the caller owns all orchestration, commits, and retries.
+$EXTRA_NOTES
+## Phase 1: Repo exploration
+
+Analyze the cloned repo at $CLONE_DIR. Do NOT just read the README — dig into the actual code:
+
+1. Run: find $CLONE_DIR -type f | head -200 (get the file tree)
+2. Run: wc -l on key source files to gauge project size
+3. Read the entry point(s) — main.go, index.ts, __main__.py, cmd/, src/main.rs, etc.
+4. Read core modules — the files where the actual logic lives, not just config/setup
+5. Read any config schemas, API definitions, or protocol files
+6. Check dependencies (package.json, go.mod, Cargo.toml, requirements.txt, pyproject.toml)
+7. Skim tests if they exist — they reveal intended behavior and edge cases
+
+Spend real time here. Read at least 5-10 source files. The goal is to understand HOW the project works, not just WHAT it claims to do.
+
+## Phase 2: Architectural analysis
+
+Based on your code reading, identify:
+
+- **Architecture pattern**: How is the system structured? (monolith, microservices, pipeline, agent hierarchy, plugin system, etc.)
+- **Key techniques**: What are the non-obvious implementation choices? (specific algorithms, data structures, protocols, concurrency patterns)
+- **Innovation points**: What does this project do differently from the obvious approach? What would surprise a senior engineer?
+- **Design trade-offs**: What did the authors optimize for, and what did they sacrifice? (speed vs correctness, simplicity vs flexibility, etc.)
+- **Core abstractions**: What are the 2-3 key types/interfaces/concepts that everything else is built on?
+
+For AI/agent repos specifically, also identify:
+- Memory architecture (flat, hierarchical, episodic, semantic, etc.)
+- Agent topology (single agent, multi-agent, hierarchy, swarm, etc.)
+- Context management strategy (how does it handle long context, summarization, retrieval)
+- Tool/capability model (fixed tools, dynamic tool selection, tool composition)
+- Prompt engineering patterns (chain-of-thought, few-shot, structured output, etc.)
+
+## Phase 3: Wiki page creation
+
+1. Save to raw/<slug>.md with YAML frontmatter (url, title, author, date_fetched, date_published). Include the full analysis in the raw file. The frontmatter MUST include a url: line whose value is exactly this URL: $INGEST_URL — duplicate detection depends on it.
+2. Read index.md for existing pages and cross-link targets. Grep for related keywords.
+3. Create a wiki page at <Title>.md with:
+   - One-paragraph summary of what this project is and why it matters
+   - **Architecture** section — how it's built, with specific file/module references
+   - **Key techniques** section — the non-obvious stuff, with code-level specifics
+   - **Design decisions** section — what trade-offs were made and why
+   - **Comparison notes** — how this approach differs from related projects in the wiki (check index.md)
+   - Tags: #tool #project plus domain tags (#agents #database #memory etc.)
+   - [[wikilinks]] to related pages
+   - Source/date footer
+4. Update index.md — add under the most appropriate section with a one-line summary.
+5. Append to log.md — exactly ONE bullet line per ingest, in EXACTLY this format (no headings, no multi-line entries, no other format):
+   - YYYY-MM-DD: Ingested [Title](URL) (author, site, publication-date) — 1–3 sentence summary. → raw/<slug>.md, [[Page Title]]. Cross-links: [[A]], [[B]].
+
+Guidelines:
+- Be specific: "uses a skip list for the index" not "uses efficient data structures"
+- Be comparative: "unlike X which does Y, this project does Z because..."
+- Be opinionated: if the architecture has a weakness or a clever insight, say so
+- Keep pages phone-readable: short paragraphs, clear headers
+- Today's date is $INGEST_DATE
+INGEST_EOF
+else
+  cat <<INGEST_EOF | (cd "$WT" && "$CLI" -p --allowedTools "Read,Write,Edit,Bash,WebFetch,WebSearch" --add-dir "$WT") || llm_failed
+You are ingesting a URL into an Obsidian wiki.
+
+Wiki location: $WT
+
+The wiki CLAUDE.md has been loaded via --add-dir and defines page format and conventions. Follow it.
+
+URL to ingest: $INGEST_URL
+
+IMPORTANT: You are one step inside a larger pipeline. Work ONLY inside $WT. Do NOT run the wiki-ingest scripts, do NOT use surf or any browser automation, and do NOT run git branch/commit/merge/push — the caller owns all orchestration, commits, and retries.
+$EXTRA_NOTES
+Steps:
+1. Fetch the URL with WebFetch. For GitHub repos, also fetch the raw README.
+2. Read index.md for existing pages and cross-link targets. Grep for related keywords in existing wiki pages.
+3. Save to raw/<slug>.md with YAML frontmatter (url, title, author, date_fetched, date_published). The frontmatter MUST include a url: line whose value is exactly this URL: $INGEST_URL — duplicate detection depends on it.
+4. Create a wiki page at <Title>.md in the wiki directory: one-paragraph precis, key quotes (blockquoted with commentary), key themes (#concept #tool #pattern #person), critical analysis (opinionated — sharp takes not bland summaries), [[wikilinks]] to related pages, source/date footer.
+5. Update index.md — add under the most appropriate section with a one-line summary.
+6. Append to log.md — exactly ONE bullet line per ingest, in EXACTLY this format (no headings, no multi-line entries, no other format):
+   - YYYY-MM-DD: Ingested [Title](URL) (author, site, publication-date) — 1–3 sentence summary. → raw/<slug>.md, [[Page Title]]. Cross-links: [[A]], [[B]].
+
+Guidelines:
+- Preserve the author's voice when quoting
+- Be opinionated in critical analysis
+- If the URL can't be fetched, STOP: write no files and end your turn. The caller detects the empty result and refetches via browser automation, then re-runs you with the content. Do not build a page from search results or guesswork.
+- Keep pages phone-readable: short paragraphs, clear headers
+- Today's date is $INGEST_DATE
+INGEST_EOF
+fi
+
+# --- Commit --------------------------------------------------------------------
+
+# dscldy is told to delete the prefetched grab when done, but if it failed or
+# forgot, the leftover must not read as "changes" and get merged into main.
+rm -f "$WT/raw/_prefetched.txt"
+
+# The no-changes test also excludes _prefetched.txt: if a past incident ever
+# left one tracked on main, the rm above would stage a deletion and a failed
+# ingest would read as "changes", masking the exit-3 signal.
+git -C "$WT" add -A
+if git -C "$WT" diff --cached --quiet -- . ":(exclude)raw/_prefetched.txt"; then
+  echo "NO CHANGES — fetch likely failed for $INGEST_URL"
+  exit 3
+fi
+if [ "$REPO_MODE" -eq 1 ]; then
+  git -C "$WT" commit -m "Ingest (repo analysis): $INGEST_URL" --author="wiki-ingest <noreply@wiki-ingest>"
+else
+  git -C "$WT" commit -m "Ingest: $INGEST_URL" --author="wiki-ingest <noreply@wiki-ingest>"
+fi
+
+# Commit any local changes on main first (e.g. Obsidian edits) so merge doesn't fail
+git -C "$WIKI" add -A 2>/dev/null || true
+git -C "$WIKI" diff --cached --quiet 2>/dev/null || \
+  git -C "$WIKI" commit -m "Auto-commit local changes before ingest merge" 2>/dev/null || true
+
+# --- Merge into main (with retry) + push ----------------------------------------
+
+if ! merge_with_retry "$WIKI"; then
+  echo "MERGE FAILED after 5 attempts for $INGEST_URL — branch $BRANCH kept for retry" >&2
+  exit 1
+fi
+
+if git -C "$WIKI" push origin main --quiet 2>/dev/null; then
+  PUSH_STATUS="pushed"
+else
+  PUSH_STATUS="push-failed"
+fi
+
+echo "INGESTED: $INGEST_URL (branch $BRANCH, merged, $PUSH_STATUS)"
+# trap removes the worktree and the (now merged) branch
