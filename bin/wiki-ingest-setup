@@ -1,0 +1,60 @@
+#!/bin/bash
+# wiki-ingest-setup [--gitdir <path>] — bootstrap an Obsidian wiki for ingestion.
+#
+# Idempotent: only creates what is missing, never overwrites existing files.
+# Sets up the git repo, the merge=union gitattributes, and seed files.
+#
+# Reads WIKI_PATH for the target directory. --gitdir places the .git outside
+# the wiki dir (useful when the wiki lives in a cloud-synced folder).
+#
+# Targets bash 3.2 (macOS /bin/bash).
+
+set -eu
+
+WIKI="${WIKI_PATH:-}"
+if [ -z "$WIKI" ]; then
+  echo "wiki-ingest-setup: set WIKI_PATH to the wiki directory you want to create/bootstrap" >&2
+  exit 64
+fi
+
+GITDIR=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --gitdir) [ $# -ge 2 ] || { echo "wiki-ingest-setup: --gitdir needs a path" >&2; exit 64; }; GITDIR="$2"; shift 2 ;;
+    *) echo "wiki-ingest-setup: unknown argument: $1" >&2; exit 64 ;;
+  esac
+done
+
+SELF="$(cd "$(dirname "$0")" && pwd)"
+TEMPLATE="$SELF/../assets/wiki-CLAUDE.md"
+
+mkdir -p "$WIKI/raw"
+
+# git init (with optional external gitdir)
+if [ ! -e "$WIKI/.git" ]; then
+  if [ -n "$GITDIR" ]; then
+    mkdir -p "$GITDIR"
+    git init -b main --separate-git-dir "$GITDIR" "$WIKI"
+  else
+    git init -b main "$WIKI"
+  fi
+fi
+
+# merge=union so parallel ingests never conflict on the append-only files
+if [ ! -f "$WIKI/.gitattributes" ]; then
+  printf 'index.md merge=union\nlog.md merge=union\n' > "$WIKI/.gitattributes"
+fi
+
+# Seed files (only if absent)
+[ -f "$WIKI/CLAUDE.md" ] || cp "$TEMPLATE" "$WIKI/CLAUDE.md"
+[ -f "$WIKI/index.md" ]  || printf '# Wiki Index\n\n' > "$WIKI/index.md"
+[ -f "$WIKI/log.md" ]    || printf '# Wiki Log\n\n' > "$WIKI/log.md"
+[ -f "$WIKI/raw/.gitkeep" ] || : > "$WIKI/raw/.gitkeep"
+
+# Initial commit if the repo has no commits yet
+if ! git -C "$WIKI" rev-parse HEAD >/dev/null 2>&1; then
+  git -C "$WIKI" add -A
+  git -C "$WIKI" commit -q -m "Bootstrap wiki" || true
+fi
+
+echo "wiki-ingest-setup: $WIKI is ready (branch: $(git -C "$WIKI" rev-parse --abbrev-ref HEAD 2>/dev/null || echo '?'))"
