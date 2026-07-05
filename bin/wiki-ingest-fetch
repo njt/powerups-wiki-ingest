@@ -16,6 +16,10 @@ if [ -z "$TRAF" ]; then
   if command -v trafilatura >/dev/null 2>&1; then TRAF="trafilatura"
   elif [ -x "$HOME/.local/bin/trafilatura" ]; then TRAF="$HOME/.local/bin/trafilatura"
   else echo "wiki-ingest-fetch: trafilatura not found (pipx install trafilatura)" >&2; exit 1; fi
+elif ! command -v "$TRAF" >/dev/null 2>&1; then
+  # Explicit override that doesn't resolve — fail loudly instead of silently
+  # extracting nothing and looking like an empty page.
+  echo "wiki-ingest-fetch: TRAFILATURA='$TRAF' is not executable" >&2; exit 1
 fi
 
 MODE="url"; SRC=""
