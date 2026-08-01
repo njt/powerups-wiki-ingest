@@ -6,6 +6,8 @@
 # wiki-ingest-run commits only when the ingest actually produced the tiers it
 # promised. No network: every case uses --content with a local text file.
 #
+# Also covers --summary-only (backfill), which has its own completeness check.
+#
 # Targets bash 3.2 (macOS /bin/bash).
 
 set -u
@@ -147,6 +149,65 @@ check "correct ingest commits" 0 $?
 for f in raw/case-four.md summary/case-four.md "topic/Test Page.md"; do
   [ -f "$WIKI_PATH/$f" ] || { echo "FAIL: good — $f missing from the wiki"; fail=1; }
 done
+
+# --- case 5: --summary-only backfills an existing raw/ file -------------------
+# Seed a raw file with no summary — the situation --summary-only exists for.
+printf -- '---\nurl: https://example.invalid/orphan\ndate_fetched: 2026-08-01\n---\n\nOrphan body text.\n' \
+  > "$WIKI_PATH/raw/orphan.md"
+git -C "$WIKI_PATH" add -A && git -C "$WIKI_PATH" commit -q -m "Seed orphan raw file"
+
+STUB_MODE=summary-good STUB_SLUG=orphan \
+  "$BIN/wiki-ingest-run" --summary-only orphan >/dev/null 2>"$SANDBOX/e5"
+check "--summary-only commits a summary" 0 $?
+[ -f "$WIKI_PATH/summary/orphan.md" ] \
+  || { echo "FAIL: summary-only — summary/orphan.md missing, stderr: $(cat "$SANDBOX/e5")"; fail=1; }
+changed=$(git -C "$WIKI_PATH" show --name-only --format="" HEAD | grep -v '^$')
+[ "$changed" = "summary/orphan.md" ] \
+  || { echo "FAIL: summary-only — commit touched more than the summary: $changed"; fail=1; }
+[ "$(head_subject)" = "Backfill summary: orphan" ] \
+  || { echo "FAIL: summary-only — commit subject is '$(head_subject)'"; fail=1; }
+
+# --- case 6: --summary-only must refuse to touch anything else ----------------
+printf -- '---\nurl: https://example.invalid/orphan2\ndate_fetched: 2026-08-01\n---\n\nOrphan two body text.\n' \
+  > "$WIKI_PATH/raw/orphan2.md"
+git -C "$WIKI_PATH" add -A && git -C "$WIKI_PATH" commit -q -m "Seed second orphan raw file"
+before=$(head_subject)
+STUB_MODE=summary-overreach STUB_SLUG=orphan2 \
+  "$BIN/wiki-ingest-run" --summary-only orphan2 >/dev/null 2>"$SANDBOX/e6"
+check "--summary-only rejects out-of-scope writes" 1 $?
+grep -q "outside summary/" "$SANDBOX/e6" \
+  || { echo "FAIL: summary-overreach — wrong message: $(cat "$SANDBOX/e6")"; fail=1; }
+[ "$(head_subject)" = "$before" ] \
+  || { echo "FAIL: summary-overreach — main advanced"; fail=1; }
+
+# --- case 7: --summary-only with no such raw file -----------------------------
+STUB_MODE=summary-good STUB_SLUG=nosuch \
+  "$BIN/wiki-ingest-run" --summary-only nosuch >/dev/null 2>"$SANDBOX/e7"
+check "--summary-only fails on a missing raw file" 1 $?
+grep -q "no such source" "$SANDBOX/e7" \
+  || { echo "FAIL: missing-raw — wrong message: $(cat "$SANDBOX/e7")"; fail=1; }
+
+# --- case 8: --summary-only when the LLM writes nothing -----------------------
+before=$(head_subject)
+STUB_MODE=nothing STUB_SLUG=orphan2 \
+  "$BIN/wiki-ingest-run" --summary-only orphan2 >/dev/null 2>"$SANDBOX/e8"
+check "--summary-only fails when the LLM writes nothing" 1 $?
+grep -q "wrote nothing" "$SANDBOX/e8" \
+  || { echo "FAIL: summary-empty — wrong message: $(cat "$SANDBOX/e8")"; fail=1; }
+[ "$(head_subject)" = "$before" ] \
+  || { echo "FAIL: summary-empty — main advanced"; fail=1; }
+
+# --- case 9: a URL argument resolves to the same slug -------------------------
+STUB_MODE=summary-good STUB_SLUG=orphan2 \
+  "$BIN/wiki-ingest-run" --summary-only https://example.invalid/orphan2 >/dev/null 2>"$SANDBOX/e9"
+check "--summary-only accepts a URL and derives the slug" 0 $?
+[ -f "$WIKI_PATH/summary/orphan2.md" ] \
+  || { echo "FAIL: url-slug — summary/orphan2.md missing, stderr: $(cat "$SANDBOX/e9")"; fail=1; }
+
+# --- case 10: --summary-only rejects incompatible flags -----------------------
+STUB_MODE=summary-good STUB_SLUG=orphan \
+  "$BIN/wiki-ingest-run" --summary-only --repo https://github.com/o/r >/dev/null 2>"$SANDBOX/e10"
+check "--summary-only --repo is a usage error" 64 $?
 
 [ "$fail" = 0 ] && echo "test-guard: ALL PASS"
 exit $fail

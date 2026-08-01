@@ -18,13 +18,20 @@
 #   --dry-run         plumbing test: skip the LLM; write a marker file, merge the
 #                     ingest branch into a THROWAWAY branch created from main
 #                     (never into main), verify, clean up. Leaves zero trace.
+#   --summary-only    BACKFILL an existing source: the argument is a slug (or a
+#                     URL, which is slugified) naming an existing raw/<slug>.md.
+#                     Nothing is fetched or cloned; the LLM reads that archive
+#                     and writes ONLY summary/<slug>.md. topic/, index.md and
+#                     log.md are left alone — the source is already indexed and
+#                     logged, this only fills in a missing precis.
 #
 # Exit codes:
-#   0  ingested (or dry-run OK)
+#   0  ingested (or dry-run OK, or summary backfilled)
 #   2  duplicate — already ingested (use --force to re-ingest)
 #   3  no changes — fetch likely failed (orchestrator should retry with surf)
 #   64 usage error
-#   1  other failure
+#   1  other failure — including, for --summary-only, a missing raw/<slug>.md,
+#      an LLM that wrote nothing, or one that wrote outside summary/
 #
 # Targets bash 3.2 (macOS /bin/bash). Runs non-interactively (launchd-safe).
 
@@ -48,6 +55,7 @@ fi
 
 usage() {
   echo "usage: wiki-ingest-run [--repo] [--content FILE] [--force] [--note TEXT] [--date YYYY-MM-DD] [--dry-run] [--verbatim-only] <url>" >&2
+  echo "       wiki-ingest-run --summary-only <slug|url>   # backfill summary/<slug>.md from an existing raw/<slug>.md" >&2
   exit 64
 }
 
@@ -74,6 +82,7 @@ CONTENT_FILE=""
 FORCE=0
 DRY_RUN=0
 VERBATIM_ONLY=0
+SUMMARY_ONLY=0
 NOTE=""
 INGEST_DATE="$(date '+%Y-%m-%d')"
 INGEST_URL=""
@@ -87,6 +96,7 @@ while [ $# -gt 0 ]; do
     --date)    [ $# -ge 2 ] || usage; INGEST_DATE="$2"; shift 2 ;;
     --dry-run) DRY_RUN=1; shift ;;
     --verbatim-only) VERBATIM_ONLY=1; shift ;;
+    --summary-only)  SUMMARY_ONLY=1; shift ;;
     --)        shift; [ $# -eq 1 ] || usage; INGEST_URL="$1"; shift ;;
     -*)        usage ;;
     *)         [ -z "$INGEST_URL" ] || usage; INGEST_URL="$1"; shift ;;
@@ -97,6 +107,27 @@ done
 if [ -n "$CONTENT_FILE" ] && [ ! -r "$CONTENT_FILE" ]; then
   echo "wiki-ingest-run: --content file not readable: $CONTENT_FILE" >&2
   exit 64
+fi
+
+# --- --summary-only: resolve the slug and prove the source exists -------------
+
+SUMMARY_SLUG=""
+if [ "$SUMMARY_ONLY" -eq 1 ]; then
+  # Backfill reads an existing archive; fetching, cloning, dry-run plumbing and
+  # the verbatim verdict pass all belong to a fresh ingest.
+  if [ "$REPO_MODE" -eq 1 ] || [ -n "$CONTENT_FILE" ] || [ "$DRY_RUN" -eq 1 ] || [ "$VERBATIM_ONLY" -eq 1 ]; then
+    echo "wiki-ingest-run: --summary-only cannot be combined with --repo, --content, --dry-run or --verbatim-only" >&2
+    exit 64
+  fi
+  # Slugs are [a-z0-9-] by construction (see url_slug); anything else is a URL.
+  case "$INGEST_URL" in
+    *[!a-z0-9-]*) SUMMARY_SLUG=$(url_slug "$INGEST_URL") ;;
+    *)            SUMMARY_SLUG="$INGEST_URL" ;;
+  esac
+  if [ ! -f "$WIKI/raw/$SUMMARY_SLUG.md" ]; then
+    echo "wiki-ingest-run: --summary-only: no such source raw/$SUMMARY_SLUG.md in $WIKI" >&2
+    exit 1
+  fi
 fi
 
 # --- Reap stale state from previous runs ------------------------------------
@@ -126,7 +157,9 @@ done
 
 # --- Duplicate check ----------------------------------------------------------
 
-if [ "$FORCE" -ne 1 ]; then
+# --summary-only is a backfill of an already-ingested source, so the duplicate
+# it would find is exactly the source it is meant to work on.
+if [ "$FORCE" -ne 1 ] && [ "$SUMMARY_ONLY" -ne 1 ]; then
   if [ ! -x "$SCRIPT_DIR/wiki-ingest-dupcheck" ]; then
     echo "wiki-ingest-run: $SCRIPT_DIR/wiki-ingest-dupcheck missing or not executable — refusing to ingest without duplicate check (use --force to override)" >&2
     exit 1
@@ -219,9 +252,12 @@ fi
 git -C "$WIKI" worktree add "$WT" -b "$BRANCH" main
 mkdir -p "$WT/raw" "$WT/summary" "$WT/topic"
 
-# Stage the verbatim source deterministically (dry-run skips this).
+# Stage the verbatim source deterministically (dry-run skips this;
+# --summary-only skips it too — its raw/<slug>.md is already in the wiki).
 SLUG=""
-if [ "$DRY_RUN" -ne 1 ]; then
+if [ "$SUMMARY_ONLY" -eq 1 ]; then
+  SLUG="$SUMMARY_SLUG"
+elif [ "$DRY_RUN" -ne 1 ]; then
   SLUG=$(url_slug "$INGEST_URL")
   FETCH="$SCRIPT_DIR/wiki-ingest-fetch"
   if [ ! -x "$FETCH" ]; then
@@ -335,7 +371,47 @@ llm_failed() {
 # whatever project CLAUDE.md lives there and can start recursively
 # orchestrating the pipeline (observed 2026-07-05). The in-prompt guardrails
 # below reinforce this.
-if [ "$VERBATIM_ONLY" -eq 1 ]; then
+if [ "$SUMMARY_ONLY" -eq 1 ]; then
+  cat <<INGEST_EOF | (cd "$WT" && "$CLI" -p --allowedTools "Read,Write" --add-dir "$WT") || llm_failed
+You are backfilling ONE missing precis in an Obsidian wiki. The source was
+ingested previously and its verbatim text is already archived at raw/$SLUG.md.
+Do NOT fetch anything. Do NOT use WebFetch, WebSearch, or any browser tool.
+
+Wiki location: $WT
+Source archive: raw/$SLUG.md
+
+Read raw/$SLUG.md and write EXACTLY ONE file: summary/$SLUG.md — a concise
+precis of that source, in the curated format the wiki CLAUDE.md defines.
+
+It starts with YAML frontmatter, then the precis:
+
+---
+url: <copy the url: value from raw/$SLUG.md's frontmatter, exactly>
+title: "<the source's own title>"
+author: <author name>
+date_fetched: <copy the date_fetched: value from raw/$SLUG.md>
+date_published: <YYYY-MM-DD, if the source states one>
+---
+
+Omit title, author or date_published only if the archived text genuinely does
+not give you the value — never invent one. url and date_fetched are copied from
+the raw file, so they are always available.
+
+Below the frontmatter: a few short paragraphs saying what the source covers, its
+main claims, and anything notable. Phone-readable — short paragraphs, no
+preamble. This is a precis, not a copy: do not reproduce the source at length.
+
+HARD CONSTRAINTS — this is a backfill of an already-ingested source, not a new
+ingest. The source is already in index.md and log.md and already has its topic
+page; re-logging or re-indexing it would duplicate those entries.
+- Write summary/$SLUG.md and NOTHING ELSE. One file.
+- Do NOT edit or delete raw/$SLUG.md.
+- Do NOT create or edit anything under topic/.
+- Do NOT touch index.md, log.md, or any file at the wiki root.
+- Do NOT run git branch/commit/merge/push — the caller owns all git.
+- Today's date is $INGEST_DATE.
+INGEST_EOF
+elif [ "$VERBATIM_ONLY" -eq 1 ]; then
   cat <<INGEST_EOF | (cd "$WT" && "$CLI" -p --allowedTools "Read,Bash" --add-dir "$WT") || llm_failed
 You are validating one archived source. The text is saved verbatim at
 raw/$SLUG.md. Do NOT fetch anything. Do NOT create or edit any other file.
@@ -512,14 +588,36 @@ git -C "$WT" add -A
 # so there is no net change → treat as fetch failure (exit 3 → surf). CONTENT
 # verdict: summary/ + topic/ (and index/log) are present → commit all tiers.
 if git -C "$WT" diff --cached --quiet; then
+  if [ "$SUMMARY_ONLY" -eq 1 ]; then
+    # Not a fetch failure, so not exit 3 (which tells the orchestrator to retry
+    # with surf) — the archive is right here and the LLM simply produced nothing.
+    echo "wiki-ingest-run: --summary-only wrote nothing for raw/$SLUG.md" >&2
+    exit 1
+  fi
   echo "NO CHANGES — blocked or empty for $INGEST_URL"
   exit 3
 fi
+
+# Backfill guard: exactly the missing precis, and nothing else. A backfill that
+# re-logs or re-indexes an already-ingested source duplicates those entries.
+if [ "$SUMMARY_ONLY" -eq 1 ]; then
+  STAGED=$(git -C "$WT" diff --cached --name-only)
+  if ! printf '%s\n' "$STAGED" | grep -q "^summary/${SLUG}\.md\$"; then
+    echo "wiki-ingest-run: --summary-only wrote no summary/$SLUG.md" >&2
+    exit 1
+  fi
+  OUTSIDE=$(printf '%s\n' "$STAGED" | grep -v '^summary/' || true)
+  if [ -n "$OUTSIDE" ]; then
+    echo "wiki-ingest-run: --summary-only touched files outside summary/ for $SLUG: $(printf '%s' "$OUTSIDE" | tr '\n' ' ')" >&2
+    exit 1
+  fi
+fi
+
 # Guard: a CONTENT result must include a summary AND a topic page. Check the
 # STAGED PATHS, not the filesystem — $WT is a worktree of the whole wiki, so a
 # glob like "$WT/summary/"*.md matches hundreds of pre-existing files and can
 # never fail (kata x04s: that masked a dead summary/ tier for 32 ingests).
-if [ "${VERBATIM_ONLY:-0}" -ne 1 ]; then
+if [ "${VERBATIM_ONLY:-0}" -ne 1 ] && [ "$SUMMARY_ONLY" -ne 1 ]; then
   STAGED=$(git -C "$WT" diff --cached --name-only)
 
   # summary/ is per-source, so it must be exactly this slug.
@@ -548,7 +646,9 @@ if [ "${VERBATIM_ONLY:-0}" -ne 1 ]; then
     exit 1
   fi
 fi
-if [ "$REPO_MODE" -eq 1 ]; then
+if [ "$SUMMARY_ONLY" -eq 1 ]; then
+  git -C "$WT" commit -m "Backfill summary: $SLUG" --author="wiki-ingest <noreply@wiki-ingest>"
+elif [ "$REPO_MODE" -eq 1 ]; then
   git -C "$WT" commit -m "Ingest (repo analysis): $INGEST_URL" --author="wiki-ingest <noreply@wiki-ingest>"
 else
   git -C "$WT" commit -m "Ingest: $INGEST_URL" --author="wiki-ingest <noreply@wiki-ingest>"
@@ -572,5 +672,9 @@ else
   PUSH_STATUS="push-failed"
 fi
 
-echo "INGESTED: $INGEST_URL (branch $BRANCH, merged, $PUSH_STATUS)"
+if [ "$SUMMARY_ONLY" -eq 1 ]; then
+  echo "SUMMARY BACKFILLED: summary/$SLUG.md (branch $BRANCH, merged, $PUSH_STATUS)"
+else
+  echo "INGESTED: $INGEST_URL (branch $BRANCH, merged, $PUSH_STATUS)"
+fi
 # trap removes the worktree and the (now merged) branch
