@@ -6,10 +6,19 @@ A Claude Code plugin that ingests URLs into an Obsidian wiki.
 
 - `commands/wiki-ingest.md` — the `/wiki-ingest` slash command (orchestration only).
 - `bin/` — the executables, added to PATH when the plugin is enabled. Call them by bare name.
-  - `wiki-ingest-run` — the ingest engine (worktree → LLM → commit → merge → push).
-  - `wiki-ingest-dupcheck` — deterministic duplicate detection.
+  - `wiki-ingest-run` — the ingest engine (fetch → worktree → LLM → commit → merge → push). Also hosts `--verbatim-only` (archive only) and `--summary-only` (backfill a precis from an existing `raw/` file).
+  - `wiki-ingest-fetch` — trafilatura extraction helper; exit 3 on an empty/JS-shell page.
+  - `wiki-ingest-dupcheck` — deterministic duplicate detection; scans `raw/` and `summary/`.
+  - `wiki-ingest-backfill` — re-archives URLs recorded in `ingest-queue.md`.
   - `wiki-ingest-setup` — one-time wiki bootstrap.
 - `assets/wiki-CLAUDE.md` — the schema template seeded into a new wiki.
+- `tests/` — `test-fetch.sh` (extraction, fixture-based, no network) and `test-guard.sh` (completeness guard + `--summary-only`, against a throwaway wiki with a stubbed `WIKI_INGEST_CLI`).
+
+## Testing
+
+Both test scripts are runnable with no network and no real LLM. **`test-guard.sh` seeds the throwaway wiki with a pre-existing `summary/` and `topic/` page on purpose** — the completeness guard's original bug was that it globbed the whole worktree, which only looks wrong on a *populated* wiki. Remove the seed and the test silently stops testing anything.
+
+Never point `WIKI_PATH` at a real wiki when testing.
 
 ## Conventions
 

@@ -4,11 +4,23 @@ A [Claude Code](https://claude.ai/code) plugin: feed it a URL or GitHub repo, an
 
 ## What it does
 
-- **Regular web pages** — fetches content, saves a raw source file, writes a topic page (precis, quotes, themes, opinionated analysis), updates the index and log.
+- **Regular web pages** — fetches content, archives it verbatim, writes a precis and an analysis page (quotes, themes, opinionated take), updates the index and log.
 - **GitHub repos** — shallow-clones the repo and does a deep architectural read (5–10 source files) before writing.
 - **JS-heavy / bot-protected pages** — optional browser fallback via the [`surf`](https://github.com/nat/surf) CLI when plain fetch can't get the content.
 
 Each ingest runs in an isolated git worktree, so many URLs process in parallel safely (`merge=union` on the index and log prevents conflicts).
+
+### Three-tier layout
+
+Every source lands in three places, so the verbatim record stays separable from the interpretation:
+
+| Directory | Contents |
+|-----------|----------|
+| `raw/<slug>.md` | the **verbatim** fetched source (extracted with trafilatura). Written by the pipeline, never rewritten by the model. |
+| `summary/<slug>.md` | a concise precis with curated frontmatter (title, author, dates). |
+| `topic/<Title>.md` | analysis and synthesis, cross-linked with `[[wikilinks]]`. May draw on several sources. |
+
+`index.md` and `log.md` stay at the wiki root.
 
 ## Install
 
@@ -52,6 +64,29 @@ WIKI_PATH=/path/to/wiki wiki-ingest-setup
 ```
 
 Pass several URLs at once; each ingests in parallel.
+
+## Upgrading from 1.x
+
+1.x wrote analysis pages flat at the wiki root (`<Title>.md`) and had no `summary/` tier. 2.0 writes `raw/` + `summary/` + `topic/`. Existing wikis keep working — Obsidian `[[wikilinks]]` resolve by name regardless of folder, and duplicate detection reads `raw/` and `summary/` — but the layout will be inconsistent until you migrate:
+
+```bash
+cd "$WIKI_PATH"
+# move flat topic pages into topic/, keeping index.md and log.md at the root
+for f in *.md; do
+  case "$f" in index.md|log.md|ingest-queue.md|CLAUDE.md) continue ;; esac
+  git mv "$f" topic/
+done
+git commit -m "Migrate flat topic pages into topic/"
+```
+
+Sources archived under 1.x have no precis. Backfill them from the existing `raw/` files, without refetching:
+
+```bash
+for f in raw/*.md; do
+  slug=$(basename "$f" .md)
+  [ -f "summary/$slug.md" ] || wiki-ingest-run --summary-only "$slug"
+done
+```
 
 ## License
 
