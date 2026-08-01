@@ -488,11 +488,36 @@ if git -C "$WT" diff --cached --quiet; then
   echo "NO CHANGES — blocked or empty for $INGEST_URL"
   exit 3
 fi
-# Guard: a CONTENT result must include a summary AND topic file; if only raw/
-# survived (LLM misbehaved), fail loudly rather than committing a half result.
+# Guard: a CONTENT result must include a summary AND a topic page. Check the
+# STAGED PATHS, not the filesystem — $WT is a worktree of the whole wiki, so a
+# glob like "$WT/summary/"*.md matches hundreds of pre-existing files and can
+# never fail (kata x04s: that masked a dead summary/ tier for 32 ingests).
 if [ "${VERBATIM_ONLY:-0}" -ne 1 ]; then
-  if ! ls "$WT/summary/"*.md >/dev/null 2>&1 || ! ls "$WT/topic/"*.md >/dev/null 2>&1; then
-    echo "wiki-ingest-run: incomplete result (missing summary/ or topic/) for $INGEST_URL" >&2
+  STAGED=$(git -C "$WT" diff --cached --name-only)
+
+  # summary/ is per-source, so it must be exactly this slug.
+  if ! printf '%s\n' "$STAGED" | grep -q "^summary/${SLUG}\.md\$"; then
+    echo "wiki-ingest-run: incomplete result — no summary/$SLUG.md staged for $INGEST_URL" >&2
+    exit 1
+  fi
+
+  # topic/ is a prefix match on purpose: topic filenames are human titles, not
+  # slugs, and one ingest may legitimately touch several topic pages. A page
+  # written to the wiki root instead of topic/ fails here, which is the point.
+  if ! printf '%s\n' "$STAGED" | grep -q '^topic/'; then
+    echo "wiki-ingest-run: incomplete result — no topic/ page staged for $INGEST_URL" >&2
+    exit 1
+  fi
+
+  # No NEW top-level *.md outside the known set (kata 25nm: repo-mode sometimes
+  # writes "<Title>.md" to the wiki root, and Obsidian wikilinks resolve by
+  # filename so nothing visibly breaks).
+  STRAY=$(git -C "$WT" diff --cached --name-only --diff-filter=A \
+    | grep -E '^[^/]+\.md$' \
+    | grep -v -E '^(index|log|ingest-queue|CLAUDE)\.md$' || true)
+  if [ -n "$STRAY" ]; then
+    echo "wiki-ingest-run: wrote new file(s) to the wiki root for $INGEST_URL: $(printf '%s' "$STRAY" | tr '\n' ' ')" >&2
+    echo "wiki-ingest-run: topic pages belong in topic/, precis in summary/ — refusing to commit" >&2
     exit 1
   fi
 fi
