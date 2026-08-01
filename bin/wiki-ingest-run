@@ -422,6 +422,22 @@ Leave raw/$SLUG.md exactly as-is (the verbatim README). Then produce:
 5. Append to log.md — exactly ONE bullet line, EXACTLY this format:
    - $INGEST_DATE: Ingested [Title]($INGEST_URL) (author, site, publication-date) — 1–3 sentence summary. → raw/$SLUG.md, [[Page Title]]. Cross-links: [[A]], [[B]].
 
+## BEFORE YOU FINISH — output checklist (do not skip this)
+
+The three phases above are long, and the two files that matter most are easy to
+lose track of by the time you get here. Check each one on disk before you stop:
+
+- [ ] summary/$SLUG.md EXISTS. This is the precis from Phase 3 item 1. It is the
+      single most commonly dropped output. An analysis with no summary/$SLUG.md
+      is REJECTED by the caller and the entire ingest fails.
+- [ ] The analysis page is at topic/<Title>.md — INSIDE the topic/ directory.
+      NOT <Title>.md at the wiki root. A root-written page fails the ingest.
+- [ ] raw/$SLUG.md is unchanged (verbatim README, never rewritten).
+- [ ] index.md has the new entry; log.md has exactly one new bullet.
+
+Write NOTHING to the wiki root. The ONLY root files you may touch are index.md
+and log.md. Every page you create belongs in summary/ or topic/.
+
 Guidelines:
 - Be specific: "uses a skip list for the index" not "uses efficient data structures"
 - Be comparative: "unlike X which does Y, this project does Z because..."
@@ -467,6 +483,17 @@ On CONTENT, produce:
 4. Update index.md — add the topic page under the most appropriate section.
 5. Append to log.md — exactly ONE bullet line, EXACTLY this format:
    - $INGEST_DATE: Ingested [Title]($INGEST_URL) (author, site, publication-date) — 1–3 sentence summary. → raw/$SLUG.md, [[Page Title]]. Cross-links: [[A]], [[B]].
+
+BEFORE YOU FINISH — output checklist (do not skip this). Check each on disk:
+- [ ] summary/$SLUG.md EXISTS. This is item 1 above and the most commonly
+      dropped output. Without it the caller REJECTS the whole ingest.
+- [ ] The analysis page is at topic/<Title>.md — INSIDE the topic/ directory.
+      NOT <Title>.md at the wiki root. A root-written page fails the ingest.
+- [ ] raw/$SLUG.md is unchanged (verbatim source, never rewritten).
+- [ ] index.md has the new entry; log.md has exactly one new bullet.
+
+Write NOTHING to the wiki root. The ONLY root files you may touch are index.md
+and log.md. Every page you create belongs in summary/ or topic/.
 
 Guidelines:
 - Preserve the author's voice when quoting; be opinionated in analysis.
