@@ -54,6 +54,15 @@ gates:
               application:
                 target-stage: implementation
                 state: consumed
+        - id: gate:2enq6rq17z4ykkecg15y810w:validation
+          stage: validation
+          attempts:
+            - id: gate-attempt:2enq6rq17z4ykkecg15y810w-validation-1
+              briefing:
+                id: briefing:2enq6rq17z4ykkecg15y810w:validation:attempt-1:revision-1
+                digest: sha256:85391c615c7e02eec91534fdb98db3c9038c60d0b4462c3aeeece92ccdae1ab6
+                request-digest: sha256:c53e80a88db269b81abc36dd70ca16cf9ba6d7e01164b68a918ed9b346588684
+                room-ref: ./guard-auto-commit-against-conflicted-merge/review/validation/briefing-1
 ---
 
 ## Problem
