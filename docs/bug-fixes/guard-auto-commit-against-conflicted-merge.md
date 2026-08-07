@@ -43,6 +43,17 @@ gates:
                 digest: sha256:49fa0e2b3485786b86433a34db6a71fa9cec6112d36184ff645ba51ba9fe2241
                 request-digest: sha256:82ce470bd7243aa066c79ebe57520efd905b85154bf50dc11428d7c9ecf3bd84
                 room-ref: ./guard-auto-commit-against-conflicted-merge/review/ideation/briefing-1
+              resolution:
+                type: Resolution
+                id: resolution:spacedock:2enq6rq17z4ykkecg15y810w:ideation:1
+                briefing: briefing:2enq6rq17z4ykkecg15y810w:ideation:attempt-1:revision-1
+                by: agent:first-officer
+                at: "2026-08-07T13:38:48.321467Z"
+                decision: approve
+                reason: Mechanism confirmed first-hand with a runnable reproduction that exits 0 unguarded and 1 guarded. All three kata-proposed checks disproved with evidence (relative --git-dir, ls-files -u empty after add -A, setext-heading false positive). Guard placement and exit-not-skip both justified by observed damage. Seven offline ACs, each with a named test case and falsifying edit; AC5 guards against over-firing. Backfill kept in scope per Captain's standing rhyming-bugs practice in CLAUDE.md. Captain delegated gate decisions in-conversation.
+              application:
+                target-stage: implementation
+                state: pending
 ---
 
 ## Problem

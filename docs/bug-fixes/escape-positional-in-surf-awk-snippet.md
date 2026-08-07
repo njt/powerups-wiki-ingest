@@ -206,7 +206,16 @@ tabId: 3.59286798e+08
 url: about:blank
 ```
 
-The stub `surf` is a shell script on `PATH` that prints this fixture for `tab new`, appends its argv to a log for any other subcommand, and exits 0. No real Chrome, no network.
+The stub `surf` is a shell script on `PATH` that prints this fixture for `tab new` and exits 0. No real Chrome, no network.
+
+Extraction is a fixed span, prototyped and confirmed working at ideation against the current file:
+
+```bash
+sed -n '/^TAB_ID=\$(surf tab new/,/^fi$/p' commands/wiki-ingest.md > block.sh
+PATH="$STUBDIR:$PATH" /bin/bash block.sh
+```
+
+which yields the `TAB_ID=` assignment plus the guard `if … fi` and nothing else. Bash 3.2 clean — no `mapfile`, no associative arrays, no negative indexing. If a future edit breaks the anchors, `block.sh` comes out empty and both cases fail loudly rather than passing on nothing; implementation should assert the extracted file is non-empty so that failure is unmistakable.
 
 Red run, watched before the fix: with line 70 still `$2`, the extracted block runs `awk '{printf "%.0f\n", $2}'` against the fixture and **passes** AC-2 — because the on-disk text is fine; it is the expansion that corrupts it. That is the honest shape of this bug and the reason AC-1 exists at all: **AC-2 cannot go red on the expansion defect, and must not be presented as if it could.** The red run that matters for AC-2 is the literal-`\$2` variant — exactly the failure the rejected escape would have introduced — and it does go red (`awk: syntax error`, empty `TAB_ID`).
 
