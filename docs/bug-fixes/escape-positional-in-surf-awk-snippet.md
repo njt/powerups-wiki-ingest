@@ -1,13 +1,13 @@
 ---
 id: ypjex7e2gedwvx040yf97pw1
 title: Bare $2 in the surf awk snippet is replaced by the user's second URL argument
-status: ideation
+status: implementation
 source: kata:dw2f
 started: 2026-08-07T13:23:50Z
 completed:
 verdict:
 score: 0.5
-worktree:
+worktree: .worktrees/spacedock-ensign-escape-positional-in-surf-awk-snippet
 issue:
 pr:
 mod-block:
@@ -53,7 +53,7 @@ gates:
                 reason: 'Expander measured directly rather than assumed: 0-based indexing means the bug needs three or more URLs, correcting both the kata issue and the FO''s own earlier summary. $NF chosen over the escape with verified reasoning — a literal backslash-$2 read without expansion reproduces the identical empty-TAB_ID failure. NF=2 structural in surf''s YAML, confirmed end-to-end. Bail-out exit 1 approved in scope as the silence mechanism per the README''s fail-closed-and-loudly rule. AC-1 accepted as an offline manual command driving the real binary; offline harness correctly refused as a second implementation of the thing under test. AC-2''s inability to go red on the expansion defect disclosed rather than dressed up. Captain delegated gate decisions in-conversation.'
               application:
                 target-stage: implementation
-                state: pending
+                state: consumed
 ---
 
 ## Problem
