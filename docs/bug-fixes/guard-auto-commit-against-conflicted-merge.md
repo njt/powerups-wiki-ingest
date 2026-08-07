@@ -1,7 +1,7 @@
 ---
 id: 2enq6rq17z4ykkecg15y810w
 title: Guard auto-commit against in-progress and conflicted merges
-status: backlog
+status: ideation
 source: kata:cntt
 started:
 completed:
@@ -33,7 +33,7 @@ gates:
                 reason: First-hand 2026-08-06 evidence names the corrupted file, the mechanism and the commit; only backlog item that has damaged committed data on main. Scope is a bounded guard on an existing step. Captain delegated ordering and gate decisions in-conversation.
               application:
                 target-stage: ideation
-                state: pending
+                state: consumed
 ---
 
 ## Problem
