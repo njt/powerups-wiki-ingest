@@ -11,6 +11,18 @@ worktree:
 issue:
 pr:
 mod-block:
+gates:
+    version: 1
+    records:
+        - id: gate:jcpfnk0aasbcqxz52ej6cvk1:backlog
+          stage: backlog
+          attempts:
+            - id: gate-attempt:jcpfnk0aasbcqxz52ej6cvk1-backlog-1
+              briefing:
+                id: briefing:jcpfnk0aasbcqxz52ej6cvk1:backlog:attempt-1:revision-1
+                digest: sha256:ba4a07b53987615a7ba75837a82a291fedc59eb4d40b3aa86ad535dbe641d1ba
+                request-digest: sha256:809900c947c41b37daea594955bcc1d0e329908f8173bc3d4d0ae617d6a43a4f
+                room-ref: ./slug-collision-on-shared-path-segment/review/backlog/briefing-1
 ---
 
 ## Problem

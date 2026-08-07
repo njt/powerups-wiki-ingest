@@ -1,0 +1,24 @@
+{
+  "type": "Briefing",
+  "version": "1",
+  "id": "briefing:jcpfnk0aasbcqxz52ej6cvk1:backlog:attempt-1:revision-1",
+  "question": "Advance to ideation now that a slot is free?",
+  "artifacts": [
+    {
+      "id": "artifact:jcpfnk0aasbcqxz52ej6cvk1:backlog:attempt-1:revision-1:item-1",
+      "uri": "git-root://main/237df015239dc7966720261f48b6b84639439d3f/docs/bug-fixes/_gates/pxf4-backlog.md",
+      "rev": "sha256:3666db7319b296de63fc7a33f5d3fc7d5feb559a671ffcf7fb64cc47579f45b1",
+      "mediaType": "text/markdown",
+      "summary": "Real defect with a first-hand instance: a blog URL and a repo URL sharing a last path segment both slug to cloudflare-os and overwrite each other's raw/summary/topic files. Caught only by an unrelated merge conflict; dupcheck compares source URLs, not target slugs, so it misses this entirely. Ideation must weigh the narrow collision-detect fix against host+path slugs, which would rename ~700 live files and is a migration rather than a fix. Recommend approve."
+    }
+  ],
+  "context": [
+    {
+      "type": "Reference",
+      "id": "reference:jcpfnk0aasbcqxz52ej6cvk1:backlog:attempt-1:revision-1:item-2",
+      "uri": "git-root://main/237df015239dc7966720261f48b6b84639439d3f/docs/bug-fixes/slug-collision-on-shared-path-segment.md",
+      "mediaType": "text/markdown",
+      "rev": "sha256:cce20aa42fa9a044c82f93d9f20c88f91b0214cc0bf672b28ed1aea0524d96e3"
+    }
+  ]
+}
