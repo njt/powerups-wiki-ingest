@@ -422,3 +422,7 @@ The fix behaves as specified. AC1–AC5 each reproduced green and each watched f
 One material finding: AC6's *cost* claim is wrong. The suffix token is encoded in four test literals across two cases, and changing it makes the ladder-exhaustion case report the fail-closed guard as broken — misleading precisely the person acting on the Captain's AC6 decision. The mechanism claim underneath it is sound, and the remedy is confined to `tests/test-guard.sh:552,625-627,638`.
 
 **Recommendation: REJECTED** — narrowly. Nothing about the shipped behaviour needs to change; the correction is those four test literals (derive them from the token instead of hard-coding it) plus the AC6 cost sentence in the implementation stage report. I flag for the FO that accept-with-note is a defensible alternative, since this report now documents the true cost directly above the claim it corrects — that is a proportionality call, and AC6 is the Captain's to answer either way.
+
+### Feedback Cycles
+
+- Cycle 1: REJECTED — validation gate; surface 2 files/344 LOC vs estimate none declared (n/a); AC unchanged.
