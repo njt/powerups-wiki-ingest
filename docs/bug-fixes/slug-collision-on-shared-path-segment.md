@@ -1,9 +1,9 @@
 ---
 id: jcpfnk0aasbcqxz52ej6cvk1
 title: Slug collision silently overwrites another source's raw, summary and topic files
-status: backlog
+status: ideation
 source: kata:pxf4
-started:
+started: 2026-08-07T14:00:53Z
 completed:
 verdict:
 score: 0.6
@@ -33,7 +33,7 @@ gates:
                 reason: Real defect with a first-hand 2026-08-06 instance naming both colliding URLs and the three files they fight over. Caught only by an unrelated merge conflict, and dupcheck misses it structurally by comparing source URLs rather than target slugs. Same silent-data-loss family as the two fixes already through. Slot freed by dw2f merging; sequenced third because it touches slug derivation adjacent to wiki-ingest-run. Captain delegated gate decisions in-conversation.
               application:
                 target-stage: ideation
-                state: pending
+                state: consumed
 ---
 
 ## Problem
