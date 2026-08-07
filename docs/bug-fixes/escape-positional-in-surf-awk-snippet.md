@@ -3,7 +3,7 @@ id: ypjex7e2gedwvx040yf97pw1
 title: Bare $2 in the surf awk snippet is replaced by the user's second URL argument
 status: ideation
 source: kata:dw2f
-started:
+started: 2026-08-07T13:23:50Z
 completed:
 verdict:
 score: 0.5

@@ -3,7 +3,7 @@ id: 2enq6rq17z4ykkecg15y810w
 title: Guard auto-commit against in-progress and conflicted merges
 status: ideation
 source: kata:cntt
-started:
+started: 2026-08-07T13:23:49Z
 completed:
 verdict:
 score: 0.9
