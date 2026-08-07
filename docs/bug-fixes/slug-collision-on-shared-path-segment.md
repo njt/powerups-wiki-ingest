@@ -1,13 +1,13 @@
 ---
 id: jcpfnk0aasbcqxz52ej6cvk1
 title: Slug collision silently overwrites another source's raw, summary and topic files
-status: ideation
+status: implementation
 source: kata:pxf4
 started: 2026-08-07T14:00:53Z
 completed:
 verdict:
 score: 0.6
-worktree:
+worktree: .worktrees/spacedock-ensign-slug-collision-on-shared-path-segment
 issue:
 pr:
 mod-block:
@@ -53,7 +53,7 @@ gates:
                 reason: 'Mechanism confirmed first-hand: url_slug at bin/wiki-ingest-run:65-78 is the sole derivation, call sites enumerated. Establishes that the kata''s proposed fix (teach dupcheck target-slug awareness) would make it reject genuinely new sources — worse than the bug — and instead reuses dupcheck as a URL-to-owning-file lookup that structurally separates --force re-ingest from collision, verified including a hand-renamed slug. Defect shown wider than reported (same-host collisions, query-stripping), justifying the numeric tail. --summary-only in scope as the change''s own second-order consequence. Option (b) costed as a five-step migration and declined without smuggling a live-wiki rename into a bug fix. AC6 (suffix shape) correctly declared interactive and carried forward UNSATISFIED for the Captain; mechanism is token-independent, nothing is renamed, no ingest runs before he wakes. Captain delegated gate decisions in-conversation but this specific taste call is reserved to him. Ensign also corrected a factual error in the FO''s own dispatch brief.'
               application:
                 target-stage: implementation
-                state: pending
+                state: consumed
 ---
 
 ## Problem
