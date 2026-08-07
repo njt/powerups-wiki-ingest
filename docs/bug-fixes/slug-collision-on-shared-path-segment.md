@@ -43,6 +43,17 @@ gates:
                 digest: sha256:279ca0a1369894976f719d1992206de51079258270bcefc1188e6bcf0c752b26
                 request-digest: sha256:417bdef5053f45b4cad63bf4fb27152af85ea37ff29818db6527023603cbf706
                 room-ref: ./slug-collision-on-shared-path-segment/review/ideation/briefing-1
+              resolution:
+                type: Resolution
+                id: resolution:spacedock:jcpfnk0aasbcqxz52ej6cvk1:ideation:1
+                briefing: briefing:jcpfnk0aasbcqxz52ej6cvk1:ideation:attempt-1:revision-1
+                by: agent:first-officer
+                at: "2026-08-07T14:14:36.269074Z"
+                decision: approve
+                reason: 'Mechanism confirmed first-hand: url_slug at bin/wiki-ingest-run:65-78 is the sole derivation, call sites enumerated. Establishes that the kata''s proposed fix (teach dupcheck target-slug awareness) would make it reject genuinely new sources — worse than the bug — and instead reuses dupcheck as a URL-to-owning-file lookup that structurally separates --force re-ingest from collision, verified including a hand-renamed slug. Defect shown wider than reported (same-host collisions, query-stripping), justifying the numeric tail. --summary-only in scope as the change''s own second-order consequence. Option (b) costed as a five-step migration and declined without smuggling a live-wiki rename into a bug fix. AC6 (suffix shape) correctly declared interactive and carried forward UNSATISFIED for the Captain; mechanism is token-independent, nothing is renamed, no ingest runs before he wakes. Captain delegated gate decisions in-conversation but this specific taste call is reserved to him. Ensign also corrected a factual error in the FO''s own dispatch brief.'
+              application:
+                target-stage: implementation
+                state: pending
 ---
 
 ## Problem
