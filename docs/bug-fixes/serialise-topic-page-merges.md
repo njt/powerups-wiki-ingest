@@ -1,7 +1,7 @@
 ---
 id: ghyj7yz18wnypbvkfa84vq0f
 title: Stop concurrent ingests conflicting on shared topic pages (interim mitigation)
-status: ideation
+status: implementation
 source: kata:87sc (interim mitigation only)
 started: 2026-08-07T14:28:25Z
 completed:
@@ -53,7 +53,7 @@ gates:
                 reason: 'Measured the backlog''s premise and falsified it: 11 real topic/ conflicts since 2026-08-05, not 6, with 4 non-additive. Both proposed remedies falsified against that corpus — a lock prevents 0 of 11 (repro''s merges are perfectly serialised and still conflict), unbounded merge=union is silently wrong on 4. Bounded union scores 7 auto-resolved / 4 kept loud / 0 silently wrong, including producing clean text where the cntt incident commit shipped markers. Retry classification corrected to exit-code-only after the first draft rule was shown wrong on a shared index, and a live hazard found in merge_with_retry''s unconditional abort destroying a peer''s merge state. Scope holds to the Captain''s own named interim measure; rearchitecture, prompt changes and synthesis re-runs all excluded on the record. FO approves implementation and validation ONLY: this will NOT be merged without the Captain, because it rewrites the merge critical section of a scheduled tool, AC6 and AC7 are both interactive and cannot be satisfied in his absence, and the design deliberately reserves a bounded-rule-vs-one-liner choice to him. Implementation held until pxf4 merges per the test plan''s own sequencing.'
               application:
                 target-stage: implementation
-                state: pending
+                state: consumed
 ---
 
 ## Problem
