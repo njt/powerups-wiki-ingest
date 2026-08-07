@@ -362,3 +362,46 @@ was disabled in turn *in the merged tree*:
 
 Cleanly orthogonal in both directions: each change is still individually load-bearing for
 its own cases and irrelevant to the other's. Nothing in the fix was changed for the merge.
+
+## Stage Report: validation
+
+- DONE: Each of the six acceptance criteria reproduced yourself, citing the command you ran and what came back — not the implementation's self-report.
+  AC1–AC5 reproduced green *and* watched fail under their own *Falsified by:* edit. AC6 is the Captain's; its **cost** claim was checked and is FALSE — see Findings.
+- DONE: The duplicate-generator failure mode exercised directly: disable step 1's owner lookup and confirm a --force re-ingest mints a second archive, then restore.
+  Replacing the `owning_slug` call in `resolve_slug` with `orc=1` → `FAIL: collision B — re-ingest added an archive (9 -> 10)`. Restored; 27/27 green. Every falsification ran in a `cp -R` scratch tree — the fix worktree is untouched (`git status` clean at `9f28f24`).
+- DONE: Both suites plus repro.sh green in the merged tree, with cntt's cases and the collision cases passing in one run and the test-guard.sh seed confirmed untouched.
+  `test-guard.sh` rc=0, 27 ok / 0 FAIL (cntt's 1–15/13b and collision A–F in one run); `test-fetch.sh` rc=0 ALL PASS; `repro.sh` rc=0 `REPRO: PASS`; `bash -n` clean over all of `bin/`. All under `/bin/bash` 3.2.57. Seed block sha1 `47c4675e…` — byte-identical to `main`'s.
+
+### Per-AC verdict
+
+**AC1 — PASS.** `repro.sh` → `REPRO: PASS`; collision A asserts two archives, each holding its own `url:`, and the incumbent's `raw/` + `summary/` checksums unchanged. Restoring `SLUG=$(url_slug "$INGEST_URL")` at the ingest call site → 14 FAIL lines, all four collision-A assertions among them.
+
+**AC2 — PASS, and covered beyond the suite.** Collision B asserts the `raw/*.md` count is unchanged and that `raw/widget-os.md` is the file that got the variant `url:`. The suite's single variant folds http + `www.` + no-trailing-slash + `#fragment`; **`.git` is not exercised anywhere**, so I probed all five separately plus a combined form against the unmodified `bin/`: each `--force` re-ingest kept `raw/` at 1 file and updated `cloudflare-os.md` in place. Non-vacuous — the same probe against a defeated step 1 minted six duplicates (1 → 7, including `cloudflare-os-git.md`).
+
+**AC3 — PASS.** Collision C asserts three same-host sources land in three distinct archives; E asserts an exhausted ladder is rc=1, names the candidates, leaves `main` unmoved and `raw/zed.md` unchanged. Dropping the numeric tail → `'three' ingests — expected rc=0, got rc=1` plus C and E failing.
+
+**AC4 — PASS.** Collision D asserts `--summary-only <url>` writes `summary/widget-os-hand.md` (a slug `url_slug` cannot derive) and leaves the incumbent `summary/widget-os.md` unchanged. Restoring `url_slug` at that call site → D fails rc=1 `no such source raw/thing.md`.
+
+**AC5 — PASS.** Both suites and `repro.sh` green as above. Scope confirmed rather than assumed: `url_slug`'s body byte-identical to `main`, `wiki-ingest-dupcheck` and `tests/test-fetch.sh` unchanged in the diff, seed block byte-identical, all 27 case labels distinct (no numbered/named collision), all 13 stub modes defined and used. The implementation's orthogonality measurement reproduces exactly: cntt's guard off → **19** cntt FAIL / **0** collision FAIL; both fix call sites reverted → **0** cntt FAIL / **16** collision FAIL.
+
+**AC6 — NOT SATISFIED (Captain's, as designed). The claim attached to it is false — see Findings.**
+
+### Findings
+
+**F1 — Material. The suffix token is encoded in four test literals across two cases, not one.** The implementation reports that changing it "touches that line and one deliberately-isolated test assertion … every other assertion is name-agnostic". Changing only `bin/wiki-ingest-run:97` (`tok="${host%.*}"` → `tok="${host%%.*}"`) produced **four** FAIL lines, not one: the isolated shape assertion at `tests/test-guard.sh:552`, plus `collision: exhausted slug ladder is rejected — expected rc=1, got rc=0`, `candidates not named in the message`, and `main advanced to 'Ingest: https://code.example.invalid/q/zed'`. Cause: case E's ladder seed at `tests/test-guard.sh:625-627` and the grep at `:638` hard-code `zed-code-example…`, which encodes the current token; change it and the seeds no longer occupy the ladder, so the ingest legitimately finds a free slug. Evidence fields — *workflow:* answering AC6 and changing that line is this entity's declared next action, not hypothetical; *harm:* a pure taste change reports the fail-closed guard as broken and `main` as having advanced on a source that should have been refused, which reads as a correctness regression in the fix rather than a stale fixture; *affected:* `value-ac[AC6]`, the one criterion carried forward unsatisfied for the Captain, whose cost estimate is the information he will act on; *trigger:* the run above. Task-owned and small — I confirmed the whole remedy is those four literals: with the token changed **and** `code-example` → `code` throughout the test file, `test-guard.sh` is 27/27 green again. That also independently confirms the *mechanism* claim (token-independent) is true; only the *cost* claim is wrong. **I did not fix it** — no candidate mutation before FO authorization.
+
+**F2 — Not a finding against this fix, recorded for accuracy.** The implementation cites the disabled-step-1 delta as `5 -> 6`; in the merged tree it is `9 -> 10` (cntt's cases create raw files first). Same delta, stale figure.
+
+**F3 — Confirmed pre-existing, as claimed.** A `--force` re-ingest whose LLM output is byte-identical stages nothing and exits 1 `incomplete result — no summary/… staged`. Ran the identical stub and inputs against `main`'s `bin/` and the fix's: same rc=1, same message. The "not introduced here" claim is correct.
+
+**F4 — Residual, pre-existing, unchanged by this fix.** The documented batch pattern runs one ingest per URL in parallel; `resolve_slug` resolves against a worktree cut from `main` before the peer merges, so two colliding URLs can both take the base slug. Ran genuinely concurrent colliding ingests, three times each, against the fix and against `main`: identical outcome both trees — the loser exits **1** with `MERGE FAILED after 5 attempts … branch kept for retry`, never a silent clobber, and the retry then sees the base slug occupied and suffixes correctly. Loud and retryable; worth its own entity, not this one.
+
+**Also checked, no finding:** `--verbatim-only` is exercised by no collision case, so I probed it directly — two colliding sources produced `widget-os.md` and `widget-os-code-example.md` under the fix, and a single clobbered `widget-os.md` under `main`. The case-F fail-closed decision is implemented at **both** call sites (`resolve_slug` maps `owning_slug`'s rc=2 → rc=1; `--summary-only`'s `*) exit 1`), and both are asserted separately by case F — each moved under a different falsification.
+
+### Summary
+
+The fix behaves as specified. AC1–AC5 each reproduced green and each watched fail under its own falsifying edit, in a scratch tree so the candidate was never mutated; the duplicate-generator failure mode fires exactly where step 1 is removed, and the cosmetic-variant coverage holds for `.git` too, which no test exercises. The merge with cntt is genuinely orthogonal — the 19/0 and 0/16 split reproduces exactly.
+
+One material finding: AC6's *cost* claim is wrong. The suffix token is encoded in four test literals across two cases, and changing it makes the ladder-exhaustion case report the fail-closed guard as broken — misleading precisely the person acting on the Captain's AC6 decision. The mechanism claim underneath it is sound, and the remedy is confined to `tests/test-guard.sh:552,625-627,638`.
+
+**Recommendation: REJECTED** — narrowly. Nothing about the shipped behaviour needs to change; the correction is those four test literals (derive them from the token instead of hard-coding it) plus the AC6 cost sentence in the implementation stage report. I flag for the FO that accept-with-note is a defensible alternative, since this report now documents the true cost directly above the claim it corrects — that is a proportionality call, and AC6 is the Captain's to answer either way.
