@@ -1,0 +1,24 @@
+{
+  "type": "Briefing",
+  "version": "1",
+  "id": "briefing:jcpfnk0aasbcqxz52ej6cvk1:validation:attempt-2:revision-1",
+  "question": "Does the F1 correction hold without trading one problem for a worse one, and does the fix merge?",
+  "artifacts": [
+    {
+      "id": "artifact:jcpfnk0aasbcqxz52ej6cvk1:validation:attempt-2:revision-1:item-1",
+      "uri": "git-root://main/f5c70ffa0ac26b8f69e3ef064b296cd720e9bddc/docs/bug-fixes/_gates/pxf4-validation-cycle2.md",
+      "rev": "sha256:f1b283db02bcc836cc984e9703e4c386689bef199a21f37c9ffe5a218969c4d3",
+      "mediaType": "text/markdown",
+      "summary": "Rejected claim now true first-hand: changing bin/wiki-ingest-run:97 alone leaves the suite 27/27 across five token schemes including tok=repo, where cycle 1 gave four failures. The vacuity risk did not materialise — the reviewer broke suffix behaviour three ways and confirmed case A itself goes red each time, and that the learned-token plumbing fails loudly rather than skipping silently. Scope caveat verified in both directions; path-varying schemes fail red, never silently green. bin/ byte-identical to cycle 1 by three independent measures, so AC1-AC5 carry forward; the duplicate-generator guard was re-run rather than carried and still fires. No new findings. AC6 remains the Captain's and is now genuinely a one-line change. Recommend approve and merge."
+    }
+  ],
+  "context": [
+    {
+      "type": "Reference",
+      "id": "reference:jcpfnk0aasbcqxz52ej6cvk1:validation:attempt-2:revision-1:item-2",
+      "uri": "git-root://main/f5c70ffa0ac26b8f69e3ef064b296cd720e9bddc/docs/bug-fixes/slug-collision-on-shared-path-segment.md",
+      "mediaType": "text/markdown",
+      "rev": "sha256:fb835d9a77fb7b97a75a75e03a1ea55044b375ec83cc24af7fd82f660f28c2e8"
+    }
+  ]
+}

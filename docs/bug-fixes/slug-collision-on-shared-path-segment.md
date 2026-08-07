@@ -71,6 +71,12 @@ gates:
                 at: "2026-08-07T14:57:36.706039Z"
                 decision: revise
                 reason: 'REJECTS DIRECTION on F1, test-file only. Shipped behaviour verified sound: AC1-AC5 reproduced green and each watched failing under its own falsifier in a scratch tree, 27/27 merged-tree green, duplicate-generator fires at 9->10 where step 1 is removed, .git variant and --verbatim-only probed though untested, cntt orthogonality reproduces at 19/0 and 0/16. F1 material: the AC6 cost claim is false — the suffix token is encoded in four test literals across two cases, and changing it alone makes the suite report the fail-closed guard broken and main advanced on a refused source. All four evidence fields hold against value-ac[AC6], because answering AC6 is this entity''s declared next Captain action and the misleading output lands where he will look while the correcting note sits where he may not. Accept-with-note considered and declined on that asymmetry. Authorized: fix the four literals to derive from the token, correct the AC6 cost sentence, and fold in F2''s stale 5->6 figure while the report is open. F3 confirmed pre-existing, no action. F4 residual declined and filed as its own kata issue. Captain delegated gate decisions in-conversation.'
+            - id: gate-attempt:jcpfnk0aasbcqxz52ej6cvk1-validation-2
+              briefing:
+                id: briefing:jcpfnk0aasbcqxz52ej6cvk1:validation:attempt-2:revision-1
+                digest: sha256:6694840e5197c4908ed0e71c95606bf0e12c77a5ad1e79d066c68fe7269ce013
+                request-digest: sha256:e29f9cc59ae2067c57cfccf397f2b62c19999274125837920d0be42ddb519623
+                room-ref: ./slug-collision-on-shared-path-segment/review/validation/briefing-2
 ---
 
 ## Problem
