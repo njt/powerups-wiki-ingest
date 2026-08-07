@@ -7,7 +7,7 @@ started: 2026-08-07T14:28:25Z
 completed:
 verdict:
 score: 0.7
-worktree:
+worktree: .worktrees/spacedock-ensign-serialise-topic-page-merges
 issue:
 pr:
 mod-block:
