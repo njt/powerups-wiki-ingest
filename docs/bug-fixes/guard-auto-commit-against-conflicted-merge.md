@@ -421,3 +421,7 @@ Confirmations, not findings: `git reset --quiet` does clear `MERGE_HEAD` (probed
 Recommend **PASSED**. All seven ACs were reproduced independently and all seven falsifying edits produce red, including the two the implementation honestly flagged as message-only discriminators — both confirmed to behave exactly as reported. The load-bearing design claim, that fail-closed means `exit` and not skip, is now measured: the skip variant destroys the captain's merge and its hand-resolved working tree, which is precisely the damage AC2 exists to prevent.
 
 Three findings recorded, none material, none fixed: one deferred-risk hole in the belt-and-braces scan that the live wiki cannot currently trigger, and two test/AC-text hardening notes. Disposition is the first officer's call; none of them blocks the fix. Nothing here needed the Captain — `WIKI_PATH` pointed only at `mktemp -d` sandboxes, and the live wiki was inspected read-only and is unchanged.
+
+### Feedback Cycles
+
+- Cycle 1: REJECTED — validation gate (FO override of an advisory PASSED); surface 3 files/295 LOC vs estimate none declared (n/a); AC unchanged.
