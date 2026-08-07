@@ -186,3 +186,20 @@ Also out of scope, and named so nobody adds them under cover of this fix:
 - **Re-running synthesis against the new main after a conflict.** This is the only thing that reaches the semantically correct answer, and it puts an LLM in the merge loop. That is `87sc`.
 - **Blanket `topic/*.md merge=union` in `.gitattributes`.** Considered, measured, rejected above. Recorded here so the rejection is on the record rather than rediscovered.
 - **The 4-in-11 residue.** Same-line revisions and title collisions still stop and ask a human. That is the design, not a gap in it.
+
+## Stage Report: ideation
+
+- DONE: A reproduction that actually fails, named as the exact command or scenario a fresh agent can re-run — two concurrent ingests appending to the same topic page, conflicting deterministically.
+  `BIN=<plugin>/bin docs/bug-fixes/serialise-topic-page-merges/repro/repro-topic-conflict.sh` — run 5×, identical each time; nested stub CLI as timing hook, so no real concurrency, no sleeps, no network, no LLM.
+- DONE: A recommendation between a union-ish merge driver and serialising the merge step, with the non-additive case — two ingests revising the same sentence — stated explicitly rather than assumed away.
+  Recommends union bounded by a present-in-base + empty-base-section test; the non-additive case is `topic/Software Engineering Craft.md` (merge `6b1ef45`, "Five pages"/"Six pages"), shown to be silently duplicated by unbounded union and correctly refused by the bounded rule.
+- DONE: Each acceptance criterion's evidence external to this fix body, naming the concrete edit that would make it fail, and declared offline or interactive.
+  AC1-AC5 offline (new cases in `tests/test-guard.sh`), AC6-AC7 interactive; each carries a *Concrete failing edit:* clause.
+
+### Summary
+
+The backlog's premise did not survive measurement. Replaying every merge in the live wiki since 2026-08-05 finds 11 genuine `topic/` content conflicts, not 6, and 4 of them are non-additive — three same-line revisions and one add/add. Simulating both proposed remedies against those 11: a lock prevents 0 of them (the reproduction proves why — its merges are perfectly serialised and it still conflicts), and unbounded `merge=union` is silently wrong on 4, including one that commits two contradictory sentences and one that duplicates 73 lines of a page.
+
+The recommendation is union bounded by two tests — the path must exist in the merge base, and every conflict hunk must have an empty base section — plus a blank-line separator between the two added blocks. Measured on the same 11: 7 auto-resolved (5 byte-identical to the human, 1 differing only in blank lines, 1 strictly better than a commit that shipped conflict markers), 4 kept as today's loud failure, 0 silently wrong. A `mkdir` mutex is recommended alongside, not to fix the defect but because the resolver writes to the shared checkout; `flock` is absent on macOS.
+
+Two things worth the Captain's eye. First, drafting the retry classifier surfaced a wrong assumption of my own: "are there unmerged paths?" is not a safe signal, because `$WIKI` has one index shared by every ingest — only the exit code (1 vs 128) is about this process. `repro/cross-abort-demo.sh` shows it, and shows the related hazard that `merge_with_retry`'s unconditional `git merge --abort` destroys a peer's in-progress merge. Second, this fix cannot be made fully correct: "Six pages" is a semantic reconciliation only an LLM re-run can reach, which is `87sc`. The honest claim is a 64% cut in hand merges with no corruption path, not a fix.
