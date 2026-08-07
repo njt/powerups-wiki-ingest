@@ -232,3 +232,18 @@ The surf fallback's own behaviour once `TAB_ID` is correct. This fix restores th
 Not attempted: any standing/CI check on the expansion. AC-1 needs a live `claude` invocation, so committing it as a test would put a network- and LLM-dependent case into a suite the workflow requires to run without either. It stays a recorded manual command.
 
 Also not attempted: a harness that reimplements Claude Code's `$N` substitution so AC-1 could run offline and free. Such a harness would be a second implementation of the thing under test and would go green whether or not the real expander behaves — the reason AC-1 drives the real binary instead.
+
+## Stage Report: ideation
+
+- DONE: A reproduction that actually fails, named as the exact command or scenario a fresh agent can re-run — not a description of one.
+  `## Reproduction` carries the runnable block; run on the unfixed file it returned `awk '{printf "%.0f\n", https://c.example/3}'` (session `e83758e6-3874-4100-9818-18668b3eb988`).
+- DONE: The expansion acceptance criterion explicitly declared offline or interactive, with no harness proposed to fake an interactive one.
+  AC-1 declared **offline**; it drives the real `claude` binary, and `## Out of scope` records the refusal to reimplement the expander to make it free.
+- DONE: Each acceptance criterion's evidence external to `commands/wiki-ingest.md`, naming the concrete edit that would make it fail.
+  AC-1 evidence is Claude Code's session transcript; AC-2/AC-3 are execution against a captured `surf` fixture. Each carries a measured `Falsified by:`.
+
+### Summary
+
+The report's mechanism was wrong in a way that would have sunk the repro: substitution is **0-based**, so `$2` is the *third* argument and the bug needs **three or more** URLs — a two-URL repro passes on the unfixed file. Measured against the real expander, along with a full substitution table; the `Skill`-tool path behaves identically. Chose `$2` → `$NF` over the smaller `\$2` escape, because a literal `\$2` read without expansion is an awk syntax error producing the identical empty-`TAB_ID` failure this fix exists to remove, whereas `$NF` is correct on every reading path; `surf tab new`'s YAML makes `NF=2` structural on the `tabId:` line, confirmed against live output and an end-to-end `surf tab close`.
+
+Two things the gate should look at rather than take on trust. First, a second change is proposed beyond the one-token fix: the bail-out guard currently warns and exits **0** (measured), so the fallback proceeds with an empty `TAB_ID` — it is flagged as separable and droppable if the gate reads it as scope creep. Second, AC-2 passes on the *unfixed* file and can never go red on the expansion defect, because the on-disk text was always fine; that is stated plainly in the test plan rather than dressed up as coverage. Only AC-1 bears on the actual bug, and it costs an API call, so it cannot join the two no-network test scripts.
