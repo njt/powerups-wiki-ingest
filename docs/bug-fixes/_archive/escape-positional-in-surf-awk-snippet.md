@@ -1,11 +1,11 @@
 ---
 id: ypjex7e2gedwvx040yf97pw1
 title: Bare $2 in the surf awk snippet is replaced by the user's second URL argument
-status: validation
+status: done
 source: kata:dw2f
 started: 2026-08-07T13:23:50Z
-completed:
-verdict:
+completed: 2026-08-07T13:58:22Z
+verdict: PASSED
 score: 0.5
 worktree: .worktrees/spacedock-ensign-escape-positional-in-surf-awk-snippet
 issue:
@@ -73,7 +73,8 @@ gates:
                 reason: All three ACs reproduced independently by a fresh agent with cited commands and outputs; every negative case watched going red, including AC-1's one-token revert restoring the third URL inside the awk program. Mechanism ACs re-anchor to a satisfied value AC. Diff confined to four declared files; bin/, assets/ and test-guard.sh untouched and the seed byte-identical. New exit 1's blast radius independently checked and correct. Two Polish findings declined under FO authorization; validator's decline of a live-Chrome check accepted with its stated reason. Captain delegated gate decisions in-conversation.
               application:
                 target-stage: done
-                state: pending
+                state: consumed
+archived: 2026-08-07T13:58:22Z
 ---
 
 ## Problem
