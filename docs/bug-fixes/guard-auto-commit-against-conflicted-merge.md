@@ -331,3 +331,45 @@ Confirmed the mechanism first-hand rather than trusting the report: `git add -A`
 All three checks the kata proposed are wrong as written, and each defect was reproduced: `rev-parse --git-dir` returns a *relative* path so that test silently never fires; `ls-files -u` is empty after `add -A` and also misses a merge whose resolutions are already staged; and `^=======` false-positives on markdown setext headings. Two further findings changed the design — the guard must `exit`, not skip (skipping reaches `merge_with_retry`'s `git merge --abort`, which was observed destroying a hand-resolution), and `wiki-ingest-backfill` reaches the same hazard by its own `commit_batch`, staging markers into the index and stealing merges. Cherry-pick and rebase both confirmed exposed, so they are in.
 
 A prototype guard was validated in a scratch copy of `bin/` — it closes all three reproductions, preserves the captain's in-progress merge intact, keeps the auto-commit's legitimate purpose working, and leaves `test-guard.sh` and `test-fetch.sh` all-pass under bash 3.2. Nothing in `bin/` or `tests/` was modified at this stage.
+
+## Stage Report: implementation
+
+- DONE: Each new test case watched failing for the right reason BEFORE the guard is written, with the actual red output recorded in the stage report — not an assertion that it was red.
+  Cases 11-15 were written and run against unguarded `bin/`. Verbatim red output:
+  `FAIL: merge in progress stops the ingest — expected rc=1, got rc=0`
+  `FAIL: mid-merge — main advanced to 'Merge branch 'ingest-1786110362-74882-28210''`
+  `FAIL: mid-merge — MERGE_HEAD cleared; the captain's merge did not survive`
+  `FAIL: mid-merge — no unmerged paths left; add -A marked them resolved`
+  `FAIL: cherry-pick in progress stops the ingest — expected rc=1, got rc=0`
+  `FAIL: mid-cherry-pick — conflict markers reached a commit on main`
+  `FAIL: conflict markers are refused with no merge in progress — expected rc=1, got rc=0`
+  `FAIL: markers-no-merge — conflict markers reached a commit on main`
+  `FAIL: backfill refuses a merge in progress — expected rc!=0, got 0`
+  `FAIL: backfill — main advanced to 'Backfill verbatim raw/ (batch through 0 ok / 0 queued)'`
+  `FAIL: backfill — MERGE_HEAD cleared; the captain's merge did not survive`
+- DONE: The negative control run by hand and recorded: revert the guard block, confirm cases 11-13 go red, restore it.
+  `git checkout bd74a28~1 -- bin/wiki-ingest-run` (backfill guard left in place), re-ran: cases 11, 12 and 13 all red again with the same messages as above; case 14 stayed green (it must — it is the no-regression case) and case 15 stayed green (its guard was not reverted). Restored with `git checkout HEAD -- bin/wiki-ingest-run`; `git status` clean. The fix body's standalone `repro-cntt.sh` against guarded `bin/` prints `GUARD HELD: no conflict markers on main; run exited 1` and exits 1 — the outcome the fix body predicted.
+- DONE: tests/test-guard.sh and tests/test-fetch.sh both pass under /bin/bash 3.2, with the pre-existing seed at tests/test-guard.sh:86-95 left intact.
+  `/bin/bash tests/test-guard.sh` → `test-guard: ALL PASS`, exit 0 (16 assertions). `/bin/bash tests/test-fetch.sh` → `test-fetch: ALL PASS`, exit 0. `/bin/bash -n` clean over all five scripts in `bin/`. The seed block is byte-identical — `git diff main -- tests/test-guard.sh` contains no line touching it; it now sits at :119-128 only because the new stub modes were inserted above it.
+
+Two further falsifications were run by hand to prove the green is not vacuous:
+
+- Widen the marker regex to the kata's `^(<<<<<<<|=======|>>>>>>>)` → case 14 goes red exactly as AC5 predicts: `wiki-ingest-run: conflict markers in staged file(s) — refusing to auto-commit: topic/Setext Page.md`. The setext-heading page is what makes AC5 falsifiable.
+- Drop `MERGE_HEAD` from the `for st in …` list → case 11's **rc stays 1**; it is the message assertion that catches it (`FAIL: mid-merge — wrong message: …`), because the unmerged-paths check is a second line of defence and fires instead. Worth knowing: AC1's stated falsification is not observable on exit code alone.
+
+### Four places the approved design did not survive contact
+
+Design changed in none of them — the guard is built exactly as approved. These are corrections to *test assertions* and to two factual claims in the fix body:
+
+1. **AC6's literal assertion is unsatisfiable.** AC6 says `git diff --cached` must show no `raw/` path staged. Probed directly in a scratch repo: during *any* conflicted merge, `git diff --cached --name-only` lists the conflicted path whether or not anyone staged it — identical output before and after `git add raw/`. It cannot distinguish guarded from unguarded. Case 15 asserts on the index *stages* instead: `1 2 3` (conflict untouched) versus a lone `0` (`add raw/` marked it resolved). Same intent, actually falsifiable.
+2. **Backfill's damage is worse than the fix body recorded.** The body predicted the commit would fail on a remaining unmerged path, leaving markers only in the index. With the conflict confined to `raw/`, `git add raw/` resolves everything it touches and the commit *succeeds*: observed `main` advancing to `Backfill verbatim raw/ (batch through 0 ok / 0 queued)` with `MERGE_HEAD` cleared — backfill concluded the captain's merge outright, same as `wiki-ingest-run`.
+3. **The unguarded rebase case exits 1 already, for the wrong reason.** The body predicted fail-open with `INGESTED … pushed`. Observed instead: `MERGE FAILED after 5 attempts`, i.e. the run reaches `merge_with_retry` and its `git merge --abort` runs five times against the captain's stopped rebase. Same damage class, arguably worse. Case 12b therefore asserts on the guard's message, not on rc alone, which would have passed unguarded.
+4. **Case 15 needs its own conflict branch.** Against unguarded `bin/`, case 11's ingest *concludes* the merge of `conflicting` into `main`, so by case 15 `git merge conflicting` is already up to date and conflicts with nothing — the case would have been green-by-vacuity in the red run. It now builds a fresh `conflicting-raw` branch. The fixture self-check that caught this (`FAIL: backfill fixture — no conflicted raw/ path, so the case proves nothing`) is kept in the test.
+
+### Summary
+
+Built the approved guard unchanged: the in-progress state scan (via `--absolute-git-dir`) and the unmerged-paths check before `git add -A`, the anchored marker scan between the add and the commit, all three exiting 1 rather than skipping; plus the same in-progress/unmerged block at the top of `wiki-ingest-backfill`'s `commit_batch`, returning 1 and breaking out of the fetch loop so the worklist temp file is still reaped. Committed as `bd74a28`.
+
+Test-first was followed literally: cases 11-15 were written and watched failing against unguarded `bin/` before a line of guard was written, and the red output is quoted verbatim above rather than summarised. Two design claims turned out to be wrong on contact — AC6's `diff --cached` assertion cannot discriminate, and the unguarded rebase case already exits 1 via `merge_with_retry` — so both cases now assert on the guard's message and on index stages. Neither changes the approved design or the ACs' intent, but the validation stage should check assertion shape, not just exit codes.
+
+Nothing here needed the Captain. `WIKI_PATH` pointed only at `mktemp -d` sandboxes throughout; the live wiki was never touched.
