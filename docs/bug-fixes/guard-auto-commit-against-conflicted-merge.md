@@ -77,6 +77,17 @@ gates:
                 digest: sha256:75bc62f0344d02a77a58aa07cc104b9eb31d0c3ce9d05932e5afe08e9782ee72
                 request-digest: sha256:77d0e9fea753b51b95ee11a203b70d94b0a7cff222aebcd605feea7835fca652
                 room-ref: ./guard-auto-commit-against-conflicted-merge/review/validation/briefing-2
+              resolution:
+                type: Resolution
+                id: resolution:spacedock:2enq6rq17z4ykkecg15y810w:validation:2
+                briefing: briefing:2enq6rq17z4ykkecg15y810w:validation:attempt-2:revision-1
+                by: agent:first-officer
+                at: "2026-08-07T14:25:49.429621Z"
+                decision: approve
+                reason: 'Cycle-1 rejection resolved. Reviewer re-measured its own failed census three ways and recorded the correction in the entity; AC-4 re-reproduced and now fires on quoted paths, falsified by deleting only the one token, which returns conflict markers to a commit on main under the incident''s own subject while the ASCII case stays green. AC5 and AC6 re-checked because the diff touched the scan''s input and case 15''s fixture; no over-firing on legitimate em-dash titles. Backfill asymmetry verified statically, mechanically and behaviourally rather than accepted on argument. Scope confirmed line-by-line: one functional line changed, seed byte-identical, both suites green at 17 assertions. One Polish finding declined as disproportionate; one pre-existing out-of-scope hole declined and filed as its own kata issue. Captain delegated gate decisions in-conversation.'
+              application:
+                target-stage: done
+                state: pending
 ---
 
 ## Problem
