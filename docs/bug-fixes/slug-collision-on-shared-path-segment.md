@@ -219,3 +219,20 @@ Coordination note for the implementation stage: `tests/test-guard.sh` is also mo
 ### Correction to the dispatch brief
 
 The brief stated that `bin/wiki-ingest-run` "has just changed on main (a new guard around the auto-commit, kata `cntt`)". It has not. `bd74a28` is **not** an ancestor of `main`; it lives on the unmerged branch `spacedock-ensign/guard-auto-commit-against-conflicted-merge` (worktree at `.worktrees/…`). This design is written against `main` at `f8616a2`, as instructed. The two changes do not overlap in `bin/wiki-ingest-run` — `cntt` adds guards immediately before the auto-commit at line 657, this fix touches lines 124 and 261 — but they do overlap in `tests/test-guard.sh`, hence the coordination note above.
+
+## Stage Report: ideation
+
+- DONE: A reproduction that actually fails, named as the exact command or scenario a fresh agent can re-run — not a description of one.
+  `bash docs/bug-fixes/slug-collision-on-shared-path-segment/repro.sh` (committed in 7368ec5); exits 1 against main `f8616a2`, four assertions firing, offline and network-free.
+- DONE: A recommendation between collision-detect-and-suffix and host+path slugs, with the live wiki's ~700 existing files costed explicitly.
+  Recommends collision-detect-and-resolve; option (b) costed as a five-step migration entity under "Option (b), costed" and declined as out of this workflow's remit.
+- DONE: Each acceptance criterion's evidence external to this fix body, naming the concrete edit that would make it fail, and declared offline or interactive.
+  AC1-AC5 offline (repro.sh, `tests/test-guard.sh`, `tests/test-fetch.sh`), each with a *Falsified by:* clause naming a concrete edit; AC6 declared interactive and left to the Captain.
+
+### Summary
+
+Confirmed the mechanism first-hand rather than from the report: `url_slug()` at `bin/wiki-ingest-run:65-78` is the sole derivation, reached from two call sites, and `--repo`/`--content`/`--verbatim-only` do not differ. Exercising the real function text showed the defect is wider than the incident implied — same-host collisions (`github.com/{a,b}/x`) also collapse, so a host suffix alone does not close it, and stripping the query collapses every `news.ycombinator.com/item?id=N` to `item`. That is why the design's ladder carries a numeric tail.
+
+The load-bearing decision is that a slug collision is **not** a duplicate. The kata guessed that `wiki-ingest-dupcheck` should gain target-slug awareness; that would make it exit 0 on a genuinely new source and reject it, which is worse than the bug. The design therefore leaves dupcheck unchanged and instead reuses it as the URL-to-owning-file lookup that separates a legitimate `--force` re-ingest from a real collision — verified against a seeded wiki, including a hand-renamed slug (`cloudflare-os-repo`) that no derivation rule would generate. That reuse also removed the need for any new shared-canonicalization plumbing, so the fix is one new function, two changed lines, and no change to dupcheck.
+
+Two things are flagged rather than papered over. AC6 is declared interactive: the suffix shape (`cloudflare-os-github`) is the kata's option but not what the 2026-08-06 hand resolution chose (`cloudflare-os-repo`), so it needs a Captain decision. And the dispatch brief's claim that the `cntt` guard is on main is wrong — `bd74a28` is not an ancestor of `main`; the branch is unmerged, and the real collision between the two is in `tests/test-guard.sh`, noted for the implementation stage.
