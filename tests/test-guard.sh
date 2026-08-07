@@ -42,6 +42,19 @@ cat > "$STUB" <<'STUB_EOF'
 set -u
 cat >/dev/null   # drain the prompt
 s="${STUB_SLUG:-unknown}"
+
+# A complete, well-formed result whose topic page is named after the slug, so
+# each case stages a genuinely new topic/ path. (The fixed "topic/Test Page.md"
+# of the `good` mode is already committed on main by case 4; a second ingest
+# writing identical content stages nothing and trips the completeness guard
+# before the auto-commit is ever reached.)
+write_good_slug() {
+  printf -- '---\nurl: x\n---\n\nprecis\n' > "summary/$s.md"
+  printf '# %s\n\nbody\n' "$s" > "topic/$s.md"
+  printf -- '- entry\n' >> index.md
+  printf -- '- entry\n' >> log.md
+}
+
 case "${STUB_MODE:-nothing}" in
   nothing) ;;
   raw-only) ;;                      # leave the pipeline-staged raw/ file alone
@@ -70,6 +83,26 @@ case "${STUB_MODE:-nothing}" in
     printf -- '---\nurl: x\n---\n\nprecis\n' > "summary/$s.md"
     printf '# Extra\n\nbody\n' > "topic/Extra.md"
     printf -- '- entry\n' >> log.md
+    ;;
+  good-slug)
+    write_good_slug
+    ;;
+  # The three mid-operation modes below leave $WIKI_PATH part-way through a git
+  # operation at exactly the moment the 2026-08-06 incident did: the captain
+  # starts a hand-merge while an ingest is still running. The stub is the
+  # natural hook — wiki-ingest-run invokes it partway through, so no sleeps and
+  # no flakiness are needed to hit the race.
+  mid-merge)
+    write_good_slug
+    git -C "$WIKI_PATH" merge conflicting --no-edit >/dev/null 2>&1
+    ;;
+  mid-cherry-pick)
+    write_good_slug
+    git -C "$WIKI_PATH" cherry-pick conflicting >/dev/null 2>&1
+    ;;
+  mid-rebase)
+    write_good_slug
+    git -C "$WIKI_PATH" rebase conflicting >/dev/null 2>&1
     ;;
   *) echo "stub: unknown STUB_MODE ${STUB_MODE:-}" >&2; exit 1 ;;
 esac
@@ -208,6 +241,228 @@ check "--summary-only accepts a URL and derives the slug" 0 $?
 STUB_MODE=summary-good STUB_SLUG=orphan \
   "$BIN/wiki-ingest-run" --summary-only --repo https://github.com/o/r >/dev/null 2>"$SANDBOX/e10"
 check "--summary-only --repo is a usage error" 64 $?
+
+# =============================================================================
+# Cases 11-15 — the mid-operation / conflict-marker guard on the auto-commit
+# (kata cntt).
+#
+# The "Auto-commit local changes before ingest merge" step ran `git add -A` +
+# `git commit` over $WIKI_PATH unconditionally. Against a hand-merge in
+# progress the `add -A` marks every conflicted path RESOLVED, and the commit
+# then concludes the captain's merge with the markers in it — exit 0, silently.
+# That ordering is why the unmerged check has to precede the add.
+# =============================================================================
+
+# --- fixture: a branch that conflicts with main on a topic/ and a raw/ file ---
+# topic/ is what the live incident corrupted (topic/Context Graphs.md); raw/ is
+# what wiki-ingest-backfill's narrower `git add raw/` reaches (case 15).
+printf '# Context Graphs\n\nseed body\n' > "$WIKI_PATH/topic/Context Graphs.md"
+printf -- '---\nurl: https://example.invalid/conflicted\n---\n\nseed raw body\n' \
+  > "$WIKI_PATH/raw/conflicted.md"
+git -C "$WIKI_PATH" add -A
+git -C "$WIKI_PATH" commit -q -m "Seed conflict fixture"
+git -C "$WIKI_PATH" checkout -q -b conflicting
+printf '# Context Graphs\n\nTHEIR VERSION\n' > "$WIKI_PATH/topic/Context Graphs.md"
+printf -- '---\nurl: https://example.invalid/conflicted\n---\n\nTHEIR raw body\n' \
+  > "$WIKI_PATH/raw/conflicted.md"
+git -C "$WIKI_PATH" commit -qam "their edit"
+git -C "$WIKI_PATH" checkout -q main
+printf '# Context Graphs\n\nOUR VERSION\n' > "$WIKI_PATH/topic/Context Graphs.md"
+printf -- '---\nurl: https://example.invalid/conflicted\n---\n\nOUR raw body\n' \
+  > "$WIKI_PATH/raw/conflicted.md"
+git -C "$WIKI_PATH" commit -qam "our edit"
+
+# main's tip by name: a stopped rebase detaches HEAD, so head_subject() would
+# report the rebase's replay commit rather than telling us whether main moved.
+main_subject() { git -C "$WIKI_PATH" log -1 --format=%s main; }
+# Any commit reachable from main that added or removed a conflict-marker line.
+markers_on_main() { git -C "$WIKI_PATH" log main --oneline -S'<<<<<<< ' | head -5; }
+gitdir_of_wiki() { git -C "$WIKI_PATH" rev-parse --absolute-git-dir; }
+
+# --- case 11: a merge in progress stops the ingest dead (AC1, AC2) ------------
+before=$(main_subject)
+STUB_MODE=mid-merge STUB_SLUG=case-eleven \
+  "$BIN/wiki-ingest-run" --content "$SRC" https://example.invalid/case-eleven >/dev/null 2>"$SANDBOX/e11"
+check "merge in progress stops the ingest" 1 $?
+grep -q "operation in progress" "$SANDBOX/e11" \
+  || { echo "FAIL: mid-merge — wrong message: $(cat "$SANDBOX/e11")"; fail=1; }
+[ "$(main_subject)" = "$before" ] \
+  || { echo "FAIL: mid-merge — main advanced to '$(main_subject)'"; fail=1; }
+[ -e "$(gitdir_of_wiki)/MERGE_HEAD" ] \
+  || { echo "FAIL: mid-merge — MERGE_HEAD cleared; the captain's merge did not survive"; fail=1; }
+[ -n "$(git -C "$WIKI_PATH" diff --name-only --diff-filter=U)" ] \
+  || { echo "FAIL: mid-merge — no unmerged paths left; add -A marked them resolved"; fail=1; }
+grep -q '^<<<<<<< ' "$WIKI_PATH/topic/Context Graphs.md" \
+  || { echo "FAIL: mid-merge — markers gone from the working-tree topic/Context Graphs.md"; fail=1; }
+[ -z "$(markers_on_main)" ] \
+  || { echo "FAIL: mid-merge — conflict markers reached a commit on main: $(markers_on_main)"; fail=1; }
+git -C "$WIKI_PATH" merge --abort 2>/dev/null || true
+
+# --- case 12: a conflicted cherry-pick, and a stopped rebase, stop it too (AC3)
+before=$(main_subject)
+STUB_MODE=mid-cherry-pick STUB_SLUG=case-twelve \
+  "$BIN/wiki-ingest-run" --content "$SRC" https://example.invalid/case-twelve >/dev/null 2>"$SANDBOX/e12"
+check "cherry-pick in progress stops the ingest" 1 $?
+grep -q "operation in progress" "$SANDBOX/e12" \
+  || { echo "FAIL: mid-cherry-pick — wrong message: $(cat "$SANDBOX/e12")"; fail=1; }
+[ "$(main_subject)" = "$before" ] \
+  || { echo "FAIL: mid-cherry-pick — main advanced to '$(main_subject)'"; fail=1; }
+[ -z "$(markers_on_main)" ] \
+  || { echo "FAIL: mid-cherry-pick — conflict markers reached a commit on main"; fail=1; }
+git -C "$WIKI_PATH" cherry-pick --abort 2>/dev/null || true
+
+before=$(main_subject)
+STUB_MODE=mid-rebase STUB_SLUG=case-twelve-b \
+  "$BIN/wiki-ingest-run" --content "$SRC" https://example.invalid/case-twelve-b >/dev/null 2>"$SANDBOX/e12b"
+check "stopped rebase stops the ingest" 1 $?
+grep -q "operation in progress" "$SANDBOX/e12b" \
+  || { echo "FAIL: mid-rebase — wrong message: $(cat "$SANDBOX/e12b")"; fail=1; }
+[ "$(main_subject)" = "$before" ] \
+  || { echo "FAIL: mid-rebase — main advanced to '$(main_subject)'"; fail=1; }
+git -C "$WIKI_PATH" rebase --abort 2>/dev/null || true
+
+# --- case 13: conflict markers refused with NO operation in progress (AC4) ----
+# A distinct hole: nothing is mid-operation anywhere, so the state checks above
+# all pass, and the unguarded auto-commit puts the markers straight onto main.
+before=$(main_subject)
+printf '# Context Graphs\n\n<<<<<<< HEAD\nOUR VERSION\n=======\nTHEIR VERSION\n>>>>>>> conflicting\n' \
+  > "$WIKI_PATH/topic/Context Graphs.md"
+STUB_MODE=good-slug STUB_SLUG=case-thirteen \
+  "$BIN/wiki-ingest-run" --content "$SRC" https://example.invalid/case-thirteen >/dev/null 2>"$SANDBOX/e13"
+check "conflict markers are refused with no merge in progress" 1 $?
+grep -q "conflict markers" "$SANDBOX/e13" \
+  || { echo "FAIL: markers-no-merge — wrong message: $(cat "$SANDBOX/e13")"; fail=1; }
+[ "$(main_subject)" = "$before" ] \
+  || { echo "FAIL: markers-no-merge — main advanced to '$(main_subject)'"; fail=1; }
+[ -z "$(git -C "$WIKI_PATH" diff --cached --name-only)" ] \
+  || { echo "FAIL: markers-no-merge — index left staged: $(git -C "$WIKI_PATH" diff --cached --name-only | tr '\n' ' ')"; fail=1; }
+[ -z "$(markers_on_main)" ] \
+  || { echo "FAIL: markers-no-merge — conflict markers reached a commit on main"; fail=1; }
+git -C "$WIKI_PATH" checkout -q -- "topic/Context Graphs.md"
+
+# --- case 13b: markers in a page whose NAME is non-ASCII (AC4) ----------------
+# Under git's default core.quotePath, `diff --cached --name-only` C-quotes any
+# path containing a non-ASCII byte — it prints
+#   "topic/ARIES \342\200\224 Write-Ahead Logging Recovery.md"
+# quotes, backslash escapes and all. `git show ":$p"` on that name resolves to
+# nothing, fails, and the failure is swallowed by the scan's 2>/dev/null: the
+# check silently cannot fire. This is not a contrived case. The wiki's dominant
+# title convention separates title from subtitle with an em-dash (U+2014), and
+# `git -c core.quotePath=true ls-files | grep -c '^"'` counts 80 such paths of
+# 991 topic pages in the live wiki today — about one page in twelve.
+#
+# The censusing mistake is worth naming: `git ls-files | grep -P '[^\x00-\x7F]'`
+# reports 0 and always will, because quotePath has already replaced those bytes
+# with literal ASCII backslash escapes in git's own output. The quoting that
+# causes the bug is exactly what makes the census read clean.
+EMDASH_PAGE="topic/ARIES — Write-Ahead Logging Recovery.md"
+before=$(main_subject)
+printf '# ARIES\n\n<<<<<<< HEAD\nOUR VERSION\n=======\nTHEIR VERSION\n>>>>>>> conflicting\n' \
+  > "$WIKI_PATH/$EMDASH_PAGE"
+STUB_MODE=good-slug STUB_SLUG=case-thirteen-b \
+  "$BIN/wiki-ingest-run" --content "$SRC" https://example.invalid/case-thirteen-b >/dev/null 2>"$SANDBOX/e13b"
+check "conflict markers in a non-ASCII filename are refused" 1 $?
+grep -q "conflict markers" "$SANDBOX/e13b" \
+  || { echo "FAIL: markers-emdash — wrong message: $(cat "$SANDBOX/e13b")"; fail=1; }
+grep -q "ARIES — Write-Ahead Logging Recovery.md" "$SANDBOX/e13b" \
+  || { echo "FAIL: markers-emdash — the em-dash page is not named in the message: $(cat "$SANDBOX/e13b")"; fail=1; }
+[ "$(main_subject)" = "$before" ] \
+  || { echo "FAIL: markers-emdash — main advanced to '$(main_subject)'"; fail=1; }
+[ -z "$(git -C "$WIKI_PATH" diff --cached --name-only)" ] \
+  || { echo "FAIL: markers-emdash — index left staged: $(git -C "$WIKI_PATH" diff --cached --name-only | tr '\n' ' ')"; fail=1; }
+[ -z "$(markers_on_main)" ] \
+  || { echo "FAIL: markers-emdash — conflict markers reached a commit on main: $(markers_on_main)"; fail=1; }
+rm -f "$WIKI_PATH/$EMDASH_PAGE"
+
+# --- case 14: the auto-commit still does its job (AC5) ------------------------
+# Ordinary Obsidian-style edits, plus a page whose body carries a markdown
+# setext heading. A bare "=======" underline is legal markdown, so a marker
+# regex that includes it rejects ordinary wiki content and breaks correct
+# ingests — this case is what stops the regex being widened.
+printf '# Context Graphs\n\nOUR VERSION, edited in Obsidian\n' > "$WIKI_PATH/topic/Context Graphs.md"
+printf 'My Heading\n=======\n\nA setext underline is not a conflict marker.\n' \
+  > "$WIKI_PATH/topic/Setext Page.md"
+STUB_MODE=good-slug STUB_SLUG=case-fourteen \
+  "$BIN/wiki-ingest-run" --content "$SRC" https://example.invalid/case-fourteen >/dev/null 2>"$SANDBOX/e14"
+check "ordinary local edits still auto-commit" 0 $?
+git -C "$WIKI_PATH" log main --format=%s \
+  | grep -q '^Auto-commit local changes before ingest merge$' \
+  || { echo "FAIL: auto-commit — no auto-commit on main, stderr: $(cat "$SANDBOX/e14")"; fail=1; }
+for f in "topic/Context Graphs.md" "topic/Setext Page.md"; do
+  git -C "$WIKI_PATH" ls-files --error-unmatch "$f" >/dev/null 2>&1 \
+    || { echo "FAIL: auto-commit — $f is not tracked"; fail=1; }
+done
+git -C "$WIKI_PATH" show "main:topic/Setext Page.md" | grep -q '^=======$' \
+  || { echo "FAIL: auto-commit — the setext page never reached main"; fail=1; }
+
+# --- case 15: wiki-ingest-backfill refuses the same states (AC6) --------------
+# backfill does not share wiki-ingest-run's code — it has its own commit_batch,
+# whose narrower `git add raw/` still stages a marker-laden raw/ file and marks
+# it resolved, leaving the markers in the captain's index.
+#
+# The conflict gets its own fresh branch rather than reusing `conflicting`:
+# against unguarded bin/, case 11's ingest CONCLUDES that merge, so by the time
+# we get here `git merge conflicting` is already up to date and conflicts with
+# nothing. This case must be red against unguarded bin/ too.
+# The conflicted path carries an em-dash, the wiki's real title convention, so
+# this case also covers the quoted-path condition that broke the marker scan
+# (case 13b). backfill's guard only ever tests its path list for EMPTINESS, so
+# quoting cannot make it fail open the way a per-path `git show` can — this
+# case is what turns that reasoning into evidence.
+BF_CONFLICT="raw/Backfill — Conflicted Source.md"
+printf -- '---\nurl: https://example.invalid/backfill-conflict\n---\n\nBASE raw body\n' \
+  > "$WIKI_PATH/$BF_CONFLICT"
+git -C "$WIKI_PATH" add -A
+git -C "$WIKI_PATH" commit -q -m "Seed backfill conflict base"
+git -C "$WIKI_PATH" checkout -q -b conflicting-raw
+printf -- '---\nurl: https://example.invalid/backfill-conflict\n---\n\nTHEIR raw body\n' \
+  > "$WIKI_PATH/$BF_CONFLICT"
+git -C "$WIKI_PATH" commit -qam "their backfill edit"
+git -C "$WIKI_PATH" checkout -q main
+printf -- '---\nurl: https://example.invalid/backfill-conflict\n---\n\nOUR raw body\n' \
+  > "$WIKI_PATH/$BF_CONFLICT"
+git -C "$WIKI_PATH" commit -qam "our backfill edit"
+
+# Give every summary/ a raw/ so the worklist is empty: this case is about
+# commit_batch, and an empty worklist keeps it offline (the fetch loop would
+# otherwise go to the network).
+for f in "$WIKI_PATH"/summary/*.md; do
+  [ -e "$f" ] || continue
+  s=$(basename "$f" .md)
+  [ -f "$WIKI_PATH/raw/$s.md" ] && continue
+  printf -- '---\nurl: https://example.invalid/%s\ndate_fetched: 2026-08-01\n---\n\nplaceholder\n' "$s" \
+    > "$WIKI_PATH/raw/$s.md"
+done
+git -C "$WIKI_PATH" add -A
+git -C "$WIKI_PATH" commit -q -m "Seed raw/ for every summary so the backfill worklist is empty"
+
+before=$(main_subject)
+git -C "$WIKI_PATH" merge conflicting-raw --no-edit >/dev/null 2>&1
+# quotePath=false here so the fixture check reads the real name, not the
+# C-quoted rendering — this assertion is about the fixture, not the guard.
+git -C "$WIKI_PATH" -c core.quotePath=false diff --name-only --diff-filter=U | grep -q '^raw/' \
+  || { echo "FAIL: backfill fixture — no conflicted raw/ path, so the case proves nothing"; fail=1; }
+"$BIN/wiki-ingest-backfill" >/dev/null 2>"$SANDBOX/e15"
+rc15=$?
+if [ "$rc15" != 0 ]; then
+  echo "ok: backfill refuses a merge in progress (rc=$rc15)"
+else
+  echo "FAIL: backfill refuses a merge in progress — expected rc!=0, got 0"; fail=1
+fi
+grep -q "operation in progress" "$SANDBOX/e15" \
+  || { echo "FAIL: backfill — wrong message: $(cat "$SANDBOX/e15")"; fail=1; }
+# Nothing staged is read off the INDEX STAGES, not `diff --cached`: a conflicted
+# path shows up in `git diff --cached --name-only` whether or not anyone staged
+# it, so that check cannot tell guarded from unguarded. Stages 1/2/3 mean the
+# conflict is untouched; a lone stage 0 means `git add raw/` marked it resolved.
+stages=$(git -C "$WIKI_PATH" ls-files -s -- "$BF_CONFLICT" | awk '{print $3}' | sort -u | tr '\n' ' ')
+[ "$stages" = "1 2 3 " ] \
+  || { echo "FAIL: backfill — $BF_CONFLICT index stages are [$stages], expected [1 2 3 ]: the conflict was staged/resolved"; fail=1; }
+[ "$(main_subject)" = "$before" ] \
+  || { echo "FAIL: backfill — main advanced to '$(main_subject)'"; fail=1; }
+[ -e "$(gitdir_of_wiki)/MERGE_HEAD" ] \
+  || { echo "FAIL: backfill — MERGE_HEAD cleared; the captain's merge did not survive"; fail=1; }
+git -C "$WIKI_PATH" merge --abort 2>/dev/null || true
 
 [ "$fail" = 0 ] && echo "test-guard: ALL PASS"
 exit $fail

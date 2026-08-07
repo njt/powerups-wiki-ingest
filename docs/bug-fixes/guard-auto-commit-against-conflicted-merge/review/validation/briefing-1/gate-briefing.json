@@ -1,0 +1,24 @@
+{
+  "type": "Briefing",
+  "version": "1",
+  "id": "briefing:2enq6rq17z4ykkecg15y810w:validation:attempt-1:revision-1",
+  "question": "Do the seven ACs hold, and does the fix merge?",
+  "artifacts": [
+    {
+      "id": "artifact:2enq6rq17z4ykkecg15y810w:validation:attempt-1:revision-1:item-1",
+      "uri": "git-root://main/7083b3d89dbde435b3bc5ae612abeb48082b9ce7/docs/bug-fixes/_gates/cntt-validation.md",
+      "rev": "sha256:892b8c19a6a22b7164ba52d4368159a9781d7b5915cacf3a97405de89818e877",
+      "mediaType": "text/markdown",
+      "summary": "All seven ACs reproduced independently and the exit-not-skip claim is now measured. But finding 1 is Material, not Deferred risk: the marker scan fails open on git-quoted paths, and the census that classified it deferred used git ls-files output, which core.quotePath has already made ASCII by construction — a check that cannot fail. Measured correctly, 80 of 2889 tracked paths in the live wiki are quoted today, 80 of 991 topic pages, because the wiki's dominant title convention uses an em-dash. AC-4's property does not hold for them. Authorized fix: -c core.quotePath=false plus an em-dash test case. Findings 2 and 3 Polish, declined. Recommend reject and route to implementation."
+    }
+  ],
+  "context": [
+    {
+      "type": "Reference",
+      "id": "reference:2enq6rq17z4ykkecg15y810w:validation:attempt-1:revision-1:item-2",
+      "uri": "git-root://main/7083b3d89dbde435b3bc5ae612abeb48082b9ce7/docs/bug-fixes/guard-auto-commit-against-conflicted-merge.md",
+      "mediaType": "text/markdown",
+      "rev": "sha256:3820741252ea2308dd328e9c34353e8f430efe8157e67bd426c76d3be5840ea3"
+    }
+  ]
+}

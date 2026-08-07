@@ -1,7 +1,7 @@
 ---
 id: 2enq6rq17z4ykkecg15y810w
 title: Guard auto-commit against in-progress and conflicted merges
-status: implementation
+status: validation
 source: kata:cntt
 started: 2026-08-07T13:23:49Z
 completed:
@@ -54,6 +54,40 @@ gates:
               application:
                 target-stage: implementation
                 state: consumed
+        - id: gate:2enq6rq17z4ykkecg15y810w:validation
+          stage: validation
+          attempts:
+            - id: gate-attempt:2enq6rq17z4ykkecg15y810w-validation-1
+              briefing:
+                id: briefing:2enq6rq17z4ykkecg15y810w:validation:attempt-1:revision-1
+                digest: sha256:85391c615c7e02eec91534fdb98db3c9038c60d0b4462c3aeeece92ccdae1ab6
+                request-digest: sha256:c53e80a88db269b81abc36dd70ca16cf9ba6d7e01164b68a918ed9b346588684
+                room-ref: ./guard-auto-commit-against-conflicted-merge/review/validation/briefing-1
+              resolution:
+                type: Resolution
+                id: resolution:spacedock:2enq6rq17z4ykkecg15y810w:validation:1
+                briefing: briefing:2enq6rq17z4ykkecg15y810w:validation:attempt-1:revision-1
+                by: agent:first-officer
+                at: "2026-08-07T14:07:06.428741Z"
+                decision: revise
+                reason: 'REJECTS DIRECTION on one Material finding. The marker scan fails open on git-quoted paths; the validator classified it Deferred risk using a census (git ls-files piped to a non-ASCII grep) that core.quotePath has already rendered ASCII by construction, so it could not fail. Measured correctly, git -c core.quotePath=true ls-files | grep -c ''^"'' returns 80 of 2889 tracked paths in the live wiki — 80 of 991 topic pages — because the wiki''s dominant title convention uses an em-dash. All four evidence fields establish supported-workflow harm to value-ac[AC-4]. Authorized disposition: fix, via -c core.quotePath=false plus an em-dash test case watched failing first; check backfill for the same. Findings 2 and 3 Polish, declined. All other ACs verified and stay as built. Captain delegated gate decisions in-conversation.'
+            - id: gate-attempt:2enq6rq17z4ykkecg15y810w-validation-2
+              briefing:
+                id: briefing:2enq6rq17z4ykkecg15y810w:validation:attempt-2:revision-1
+                digest: sha256:75bc62f0344d02a77a58aa07cc104b9eb31d0c3ce9d05932e5afe08e9782ee72
+                request-digest: sha256:77d0e9fea753b51b95ee11a203b70d94b0a7cff222aebcd605feea7835fca652
+                room-ref: ./guard-auto-commit-against-conflicted-merge/review/validation/briefing-2
+              resolution:
+                type: Resolution
+                id: resolution:spacedock:2enq6rq17z4ykkecg15y810w:validation:2
+                briefing: briefing:2enq6rq17z4ykkecg15y810w:validation:attempt-2:revision-1
+                by: agent:first-officer
+                at: "2026-08-07T14:25:49.429621Z"
+                decision: approve
+                reason: 'Cycle-1 rejection resolved. Reviewer re-measured its own failed census three ways and recorded the correction in the entity; AC-4 re-reproduced and now fires on quoted paths, falsified by deleting only the one token, which returns conflict markers to a commit on main under the incident''s own subject while the ASCII case stays green. AC5 and AC6 re-checked because the diff touched the scan''s input and case 15''s fixture; no over-firing on legitimate em-dash titles. Backfill asymmetry verified statically, mechanically and behaviourally rather than accepted on argument. Scope confirmed line-by-line: one functional line changed, seed byte-identical, both suites green at 17 assertions. One Polish finding declined as disproportionate; one pre-existing out-of-scope hole declined and filed as its own kata issue. Captain delegated gate decisions in-conversation.'
+              application:
+                target-stage: done
+                state: pending
 ---
 
 ## Problem
@@ -331,3 +365,158 @@ Confirmed the mechanism first-hand rather than trusting the report: `git add -A`
 All three checks the kata proposed are wrong as written, and each defect was reproduced: `rev-parse --git-dir` returns a *relative* path so that test silently never fires; `ls-files -u` is empty after `add -A` and also misses a merge whose resolutions are already staged; and `^=======` false-positives on markdown setext headings. Two further findings changed the design — the guard must `exit`, not skip (skipping reaches `merge_with_retry`'s `git merge --abort`, which was observed destroying a hand-resolution), and `wiki-ingest-backfill` reaches the same hazard by its own `commit_batch`, staging markers into the index and stealing merges. Cherry-pick and rebase both confirmed exposed, so they are in.
 
 A prototype guard was validated in a scratch copy of `bin/` — it closes all three reproductions, preserves the captain's in-progress merge intact, keeps the auto-commit's legitimate purpose working, and leaves `test-guard.sh` and `test-fetch.sh` all-pass under bash 3.2. Nothing in `bin/` or `tests/` was modified at this stage.
+
+## Stage Report: implementation
+
+- DONE: Each new test case watched failing for the right reason BEFORE the guard is written, with the actual red output recorded in the stage report — not an assertion that it was red.
+  Cases 11-15 were written and run against unguarded `bin/`. Verbatim red output:
+  `FAIL: merge in progress stops the ingest — expected rc=1, got rc=0`
+  `FAIL: mid-merge — main advanced to 'Merge branch 'ingest-1786110362-74882-28210''`
+  `FAIL: mid-merge — MERGE_HEAD cleared; the captain's merge did not survive`
+  `FAIL: mid-merge — no unmerged paths left; add -A marked them resolved`
+  `FAIL: cherry-pick in progress stops the ingest — expected rc=1, got rc=0`
+  `FAIL: mid-cherry-pick — conflict markers reached a commit on main`
+  `FAIL: conflict markers are refused with no merge in progress — expected rc=1, got rc=0`
+  `FAIL: markers-no-merge — conflict markers reached a commit on main`
+  `FAIL: backfill refuses a merge in progress — expected rc!=0, got 0`
+  `FAIL: backfill — main advanced to 'Backfill verbatim raw/ (batch through 0 ok / 0 queued)'`
+  `FAIL: backfill — MERGE_HEAD cleared; the captain's merge did not survive`
+- DONE: The negative control run by hand and recorded: revert the guard block, confirm cases 11-13 go red, restore it.
+  `git checkout bd74a28~1 -- bin/wiki-ingest-run` (backfill guard left in place), re-ran: cases 11, 12 and 13 all red again with the same messages as above; case 14 stayed green (it must — it is the no-regression case) and case 15 stayed green (its guard was not reverted). Restored with `git checkout HEAD -- bin/wiki-ingest-run`; `git status` clean. The fix body's standalone `repro-cntt.sh` against guarded `bin/` prints `GUARD HELD: no conflict markers on main; run exited 1` and exits 1 — the outcome the fix body predicted.
+- DONE: tests/test-guard.sh and tests/test-fetch.sh both pass under /bin/bash 3.2, with the pre-existing seed at tests/test-guard.sh:86-95 left intact.
+  `/bin/bash tests/test-guard.sh` → `test-guard: ALL PASS`, exit 0 (16 assertions). `/bin/bash tests/test-fetch.sh` → `test-fetch: ALL PASS`, exit 0. `/bin/bash -n` clean over all five scripts in `bin/`. The seed block is byte-identical — `git diff main -- tests/test-guard.sh` contains no line touching it; it now sits at :119-128 only because the new stub modes were inserted above it.
+
+Two further falsifications were run by hand to prove the green is not vacuous:
+
+- Widen the marker regex to the kata's `^(<<<<<<<|=======|>>>>>>>)` → case 14 goes red exactly as AC5 predicts: `wiki-ingest-run: conflict markers in staged file(s) — refusing to auto-commit: topic/Setext Page.md`. The setext-heading page is what makes AC5 falsifiable.
+- Drop `MERGE_HEAD` from the `for st in …` list → case 11's **rc stays 1**; it is the message assertion that catches it (`FAIL: mid-merge — wrong message: …`), because the unmerged-paths check is a second line of defence and fires instead. Worth knowing: AC1's stated falsification is not observable on exit code alone.
+
+### Four places the approved design did not survive contact
+
+Design changed in none of them — the guard is built exactly as approved. These are corrections to *test assertions* and to two factual claims in the fix body:
+
+1. **AC6's literal assertion is unsatisfiable.** AC6 says `git diff --cached` must show no `raw/` path staged. Probed directly in a scratch repo: during *any* conflicted merge, `git diff --cached --name-only` lists the conflicted path whether or not anyone staged it — identical output before and after `git add raw/`. It cannot distinguish guarded from unguarded. Case 15 asserts on the index *stages* instead: `1 2 3` (conflict untouched) versus a lone `0` (`add raw/` marked it resolved). Same intent, actually falsifiable.
+2. **Backfill's damage is worse than the fix body recorded.** The body predicted the commit would fail on a remaining unmerged path, leaving markers only in the index. With the conflict confined to `raw/`, `git add raw/` resolves everything it touches and the commit *succeeds*: observed `main` advancing to `Backfill verbatim raw/ (batch through 0 ok / 0 queued)` with `MERGE_HEAD` cleared — backfill concluded the captain's merge outright, same as `wiki-ingest-run`.
+3. **The unguarded rebase case exits 1 already, for the wrong reason.** The body predicted fail-open with `INGESTED … pushed`. Observed instead: `MERGE FAILED after 5 attempts`, i.e. the run reaches `merge_with_retry` and its `git merge --abort` runs five times against the captain's stopped rebase. Same damage class, arguably worse. Case 12b therefore asserts on the guard's message, not on rc alone, which would have passed unguarded.
+4. **Case 15 needs its own conflict branch.** Against unguarded `bin/`, case 11's ingest *concludes* the merge of `conflicting` into `main`, so by case 15 `git merge conflicting` is already up to date and conflicts with nothing — the case would have been green-by-vacuity in the red run. It now builds a fresh `conflicting-raw` branch. The fixture self-check that caught this (`FAIL: backfill fixture — no conflicted raw/ path, so the case proves nothing`) is kept in the test.
+
+### Summary
+
+Built the approved guard unchanged: the in-progress state scan (via `--absolute-git-dir`) and the unmerged-paths check before `git add -A`, the anchored marker scan between the add and the commit, all three exiting 1 rather than skipping; plus the same in-progress/unmerged block at the top of `wiki-ingest-backfill`'s `commit_batch`, returning 1 and breaking out of the fetch loop so the worklist temp file is still reaped. Committed as `bd74a28`.
+
+Test-first was followed literally: cases 11-15 were written and watched failing against unguarded `bin/` before a line of guard was written, and the red output is quoted verbatim above rather than summarised. Two design claims turned out to be wrong on contact — AC6's `diff --cached` assertion cannot discriminate, and the unguarded rebase case already exits 1 via `merge_with_retry` — so both cases now assert on the guard's message and on index stages. Neither changes the approved design or the ACs' intent, but the validation stage should check assertion shape, not just exit codes.
+
+Nothing here needed the Captain. `WIKI_PATH` pointed only at `mktemp -d` sandboxes throughout; the live wiki was never touched.
+
+## Stage Report: validation
+
+- DONE: Each of the seven acceptance criteria reproduced yourself, citing the command you ran and what came back — not the implementation's self-report.
+  All seven PASS. Every falsifying edit was applied to a *scratch copy* of the tree (`git archive HEAD | tar -x`); the worktree itself was never modified.
+  **AC1** — `/bin/bash tests/test-guard.sh` case 11 → `ok: merge in progress stops the ingest (rc=1)`, `main_subject()` unchanged, no marker-bearing commit reachable from `main`. Falsified by dropping `MERGE_HEAD` from the `for st` list → red (`FAIL: mid-merge — wrong message`), stderr showing the unmerged-paths check catching it instead; rc stays 1, exactly as the implementation warned.
+  **AC2** — same case: `MERGE_HEAD` still present, `--diff-filter=U` still lists `raw/conflicted.md topic/Context Graphs.md`, worktree file still holds `<<<<<<< `. Falsified for real: a variant turning all three `exit 1`s into warnings that *skip* the auto-commit → `FAIL: … MERGE_HEAD cleared; the captain's merge did not survive` and `FAIL: … markers gone from the working-tree topic/Context Graphs.md`, main advanced to `Ingest: …`. Exit-not-skip is load-bearing, and now measured rather than argued.
+  **AC3** — cases 12 and 12b → `ok (rc=1)` both, stderr naming `rebase-merge`. Falsified by cutting the list to `MERGE_HEAD REVERT_HEAD` → both red on the message assertion.
+  **AC4** — case 13 → `ok (rc=1)`, `conflict markers` in stderr, `diff --cached --name-only` empty afterwards. Falsified by deleting the marker-scan block → fully red, including `FAIL: markers-no-merge — conflict markers reached a commit on main`.
+  **AC5** — case 14 → `ok (rc=0)`, `Auto-commit local changes before ingest merge` on `main`, `topic/Setext Page.md` tracked with its `=======` intact. Falsified by widening the regex to `^(<<<<<<<|=======|>>>>>>>)` → four red assertions, the setext page rejected. The over-firing counterweight holds.
+  **AC6** — case 15 → `ok (rc=1)`, index stages `1 2 3` (conflict untouched), `MERGE_HEAD` alive. Falsified by restoring pre-fix `wiki-ingest-backfill` → five red, `stages are [0 ]`, main advanced to `Backfill verbatim raw/ …`.
+  **AC7** — `/bin/bash --version` → `3.2.57(1)-release`; `for f in bin/*; do /bin/bash -n "$f"; done` → 5/5 clean; both suites green (below).
+  End-to-end: `repro-cntt.sh` extracted verbatim from this file (lines 91-146) prints `BUG REPRODUCED … exited 0` against merge-base `bin/` and `GUARD HELD … exited 1` against HEAD — the fix body's own claim, reproduced.
+- DONE: The negative case exercised: revert the guard block, confirm cases 11-13 go red, restore it — and check each case's assertion SHAPE, since the implementation found two cases that pass unguarded on exit code alone.
+  HEAD's `tests/` against merge-base `bin/`: cases 11, 12, 12b, 13 and 15 red (16 `FAIL` lines), case 14 green as it must be. Shape checked per case by asking what single edit would pass while the bug is present: 11, 13, 14 and 15 assert on-disk damage directly and cannot be faked. 12 and 12b discriminate on the guard's message alone — confirmed independently: unguarded, `main` never moves during a rebase and the run already exits 1 via `MERGE FAILED after 5 attempts`. Case 15's fixture self-check verified live by breaking the fixture → `FAIL: backfill fixture — no conflicted raw/ path, so the case proves nothing` fires.
+- DONE: Both tests/test-guard.sh and tests/test-fetch.sh run under /bin/bash 3.2, with the pre-existing seed confirmed byte-unchanged.
+  `test-guard: ALL PASS` (16 assertions, exit 0) and `test-fetch: ALL PASS` (exit 0). Seed: the old file's lines 86-95 are byte-identical at 119-128, and a line-level diff shows **zero** lines removed from `test-guard.sh` — the change is purely additive. Substantive diff vs merge-base is exactly `bin/wiki-ingest-run` (+48), `bin/wiki-ingest-backfill` (+34/-3), `tests/test-guard.sh` (+213) and this file; the `docs/bug-fixes/` deletions visible in `main..HEAD` are branch divergence. `WIKI_PATH` was a `mktemp -d` sandbox throughout — `tests/test-guard.sh:20` exports it unconditionally — and the live wiki is untouched (HEAD `457f657`, 0 dirty paths, read-only inspection only).
+
+### Findings — triaged, none material, none fixed
+
+1. **Deferred risk — the marker scan fails open on non-ASCII paths.** `git diff --cached --name-only` C-quotes them under the default `core.quotePath`, so the loop's `git show ":$p"` fails into `2>/dev/null`. Reproduced: three staged files all carrying `<<<<<<< `, `MARKED` contained only `topic/Plain Name.md` while `"topic/Caf\303\251 Culture.md"` and `"topic/M\304\201ori Language.md"` were skipped. Affects AC4 only — the in-progress and unmerged checks are path-agnostic. Not material today: the live wiki has 0 of 2889 tracked paths with a non-ASCII byte. Promote to material on the first such page title. One-token fix, verified working: `git -C "$WIKI" -c core.quotePath=false diff --cached --name-only`.
+2. **Polish — cases 12/12b assert the message, not the damage.** Probed the unguarded rebase directly: the rebase survives, but `add -A` empties its unmerged paths, so a later `rebase --continue` would commit the markers; guarded, `topic/CG.md` stays unmerged. A `--diff-filter=U` non-empty assertion on 12/12b would encode the harm rather than the wording. The cases do discriminate as written.
+3. **Polish — AC1/AC3's `Fails if:` text overstates observability.** Dropping a state from the list leaves rc=1 in *all three* of cases 11, 12 and 12b, not just the two the implementation recorded — the unmerged-paths check is the second line of defence in every one.
+
+Confirmations, not findings: `git reset --quiet` does clear `MERGE_HEAD` (probed directly), but it is unreachable while `MERGE_HEAD` is set because the in-progress check exits first — the code comment's claim holds. And backfill's new hard `exit 1` on `commit_batch` failure was checked for regression on the happy path: a clean wiki with an empty worklist, and one with a pending `raw/` file, both give `BACKFILL DONE` and exit 0, identical to pre-fix.
+
+### Summary
+
+Recommend **PASSED**. All seven ACs were reproduced independently and all seven falsifying edits produce red, including the two the implementation honestly flagged as message-only discriminators — both confirmed to behave exactly as reported. The load-bearing design claim, that fail-closed means `exit` and not skip, is now measured: the skip variant destroys the captain's merge and its hand-resolved working tree, which is precisely the damage AC2 exists to prevent.
+
+Three findings recorded, none material, none fixed: one deferred-risk hole in the belt-and-braces scan that the live wiki cannot currently trigger, and two test/AC-text hardening notes. Disposition is the first officer's call; none of them blocks the fix. Nothing here needed the Captain — `WIKI_PATH` pointed only at `mktemp -d` sandboxes, and the live wiki was inspected read-only and is unchanged.
+
+### Feedback Cycles
+
+- Cycle 1: REJECTED — validation gate (FO override of an advisory PASSED); surface 3 files/295 LOC vs estimate none declared (n/a); AC unchanged.
+
+## Stage Report: implementation (cycle 2)
+
+Scope of this cycle: the one authorized Material finding — the marker scan failing open on git-quoted paths. The design was not reopened; the cycle-1 guard is unchanged apart from the single token.
+
+- DONE: Each new test case watched failing for the right reason BEFORE the guard is written, with the actual red output recorded in the stage report — not an assertion that it was red.
+  Case 13b (a staged marker-bearing page named `topic/ARIES — Write-Ahead Logging Recovery.md`) was written and run against the cycle-1 guard, before the fix. Verbatim red output:
+  `FAIL: conflict markers in a non-ASCII filename are refused — expected rc=1, got rc=0`
+  `FAIL: markers-emdash — the em-dash page is not named in the message: Preparing worktree (new branch 'ingest-1786111829-38625-17068')`
+  `FAIL: markers-emdash — main advanced to 'Merge branch 'ingest-1786111829-38625-17068''`
+  `FAIL: markers-emdash — conflict markers reached a commit on main: 92a7f8d Auto-commit local changes before ingest merge`
+  That last line names the damage precisely: the auto-commit itself put the markers on `main`. Case 13 (plain-ASCII name) stayed green throughout, so the failure isolates to the filename.
+- DONE: The negative control run by hand and recorded: revert the guard block, confirm cases 11-13 go red, restore it.
+  Cycle 1's control stands unchanged. This cycle adds a tighter one: remove *only* `-c core.quotePath=false`, leaving every other byte of the guard in place → case 13b goes red again with the same four messages, case 13 stays green. Restored; `git status` clean. One token, one case.
+- DONE: tests/test-guard.sh and tests/test-fetch.sh both pass under /bin/bash 3.2, with the pre-existing seed at tests/test-guard.sh:86-95 left intact.
+  `/bin/bash tests/test-guard.sh` → `test-guard: ALL PASS`, exit 0 (17 assertions, up from 16). `/bin/bash tests/test-fetch.sh` → exit 0. `/bin/bash -n` clean over all five scripts in `bin/`. `git diff main -- tests/test-guard.sh` contains no line touching the seed block.
+
+### The finding, confirmed independently
+
+Reproduced in a scratch repo before touching anything: three staged files all carrying `<<<<<<< `, scanned by the cycle-1 loop verbatim. Result — `CAUGHT: topic/Plain Name.md`, `MISSED: "topic/ARIES \342\200\224 Write-Ahead Logging Recovery.md"`. With `-c core.quotePath=false` on the diff, both are caught. The failure mode is exactly as routed: `git show ":$p"` on the C-quoted name resolves to nothing, and the scan's own `2>/dev/null` swallows it.
+
+The census was re-measured against the live wiki, read-only, and matches the routed figures:
+
+    tracked paths total         : 2889
+    quoted (non-ASCII) paths    : 80
+    topic/ pages total          : 991
+    quoted topic/ pages         : 80
+    census that always reads 0  : 0
+
+All 80 are topic pages — one in twelve — and the sample confirms the convention rather than anything exotic: `"topic/20-20-20 Rule \342\200\224 Digital Eye Strain Study.md"`, `"topic/AI Agents In-Depth \342\200\224 Function Calling, MCP and Tool Use Under the Hood.md"`. The wiki's git dir is `~/.wiki-git` (a separate git dir), which is worth knowing for any future census — a `-d "$WIKI/.git"` test reports the repo absent.
+
+### Item 2: does wiki-ingest-backfill's guard need the same treatment? No
+
+It has no per-path lookup. Its two checks are the in-progress state scan, which reads `$GITDIR` entries and never touches a pathname, and `UNMERGED=$(git diff --name-only --diff-filter=U)`, whose value is used only in `[ -n "$UNMERGED" ]` and in the message. Quoting changes how a path is *rendered*, never whether a line is emitted, so a quoted path leaves the emptiness test non-empty and the guard fails closed. The asymmetry is the point: cycle 1's marker scan was the only place that fed a path name back into git as an argument, and that is the only place quoting can turn into a fail-open.
+
+Rather than leave that as code-reading, case 15's conflicted fixture path is now `raw/Backfill — Conflicted Source.md`. Case 15 passed both before and after the fix, which is the evidence: backfill already refused a merge whose conflicted path is non-ASCII. The one exposure remaining there is cosmetic — the refusal message prints the C-quoted name — and I have not changed it, since it neither hides damage nor is in this cycle's authorized scope.
+
+### Declined items
+
+Both recorded Polish items were left alone as instructed: cases 12/12b still assert on the guard's message rather than on-disk damage, and AC1/AC3's `Fails if:` text still overstates observability.
+
+### Summary
+
+One token, one case, one cycle. `-c core.quotePath=false` on the marker scan's `diff --cached --name-only` in `bin/wiki-ingest-run`; case 13b in `tests/test-guard.sh` using the wiki's real em-dash convention; case 15's fixture path moved to a non-ASCII name so the "backfill is unaffected" claim rests on a passing test rather than an argument. Committed as `25538f3`.
+
+The finding was correct and its promotion to Material was correct: I re-ran the census myself and got 80/2889 and 80/991, with the naive `grep -P '[^\x00-\x7F]'` form returning 0 exactly as predicted. Worth carrying forward as the general lesson, because it is the same shape as the original bug and now the same shape as the missed validation: both `git add -A` before an unmerged check, and `git show` on a quoted path, are operations that destroy or discard the evidence that would have revealed them. A check whose failure mode is silence needs a test that proves it can fail.
+
+`WIKI_PATH` pointed only at `mktemp -d` sandboxes for every test run. The live wiki was read with `git ls-files` only; nothing was written to it.
+
+## Stage Report: validation (cycle 2)
+
+Re-review of the cycle-2 rework only. AC1, AC2, AC3, AC5, AC6 and AC7 are **carried forward** from the cycle-1 report above — each was reproduced first-hand against `34bf6dd`, and the diff since is one functional token plus test cases. Re-checked below is what that diff could have disturbed.
+
+- DONE: Each of the seven acceptance criteria reproduced yourself, citing the command you ran and what came back — not the implementation's self-report.
+  **First, my own correction.** My cycle-1 census was a check that could not fail, exactly as the rejection says. Re-measured on the live wiki, read-only: `git ls-files | grep -c '[^ -~]'` → **0**; `git -c core.quotePath=true ls-files | grep -c '^"'` → **80**; `git -c core.quotePath=false ls-files | grep -c '[^ -~]'` → **80**, of 2889 tracked paths, all under `topic/`, all the em-dash (U+2014) title convention. The quoting that causes the bug had already rewritten those bytes as ASCII escapes in the output I was grepping. The finding was **material**; classifying it Deferred risk on that evidence was wrong.
+  **AC4 — re-reproduced, now holds for quoted paths.** `/bin/bash tests/test-guard.sh` → `ok: conflict markers in a non-ASCII filename are refused (rc=1)`, and the guard's message names the real `ARIES — Write-Ahead Logging Recovery.md`, not its escaped form. Falsified by deleting *only* the `-c core.quotePath=false` token (verified sole difference by `diff`): case 13b goes fully red — `expected rc=1, got rc=0`, `main advanced`, and `conflict markers reached a commit on main: 3c1428d Auto-commit local changes before ingest merge` — while case 13 (ASCII) stays green. The token is load-bearing and the two cases separate cleanly.
+  **AC5 — re-checked, because the diff changed the scan's input.** The risk a widened path list introduces is over-firing on legitimate content. Probed directly: an ingest over a wiki holding `topic/ARIES — Write-Ahead Logging Recovery.md` whose body is a setext heading (`ARIES — Recovery` over `=======`) → rc=0, no guard message, page tracked on `main`, its `^=======$` intact, `Auto-commit local changes before ingest merge` present. `quotePath=false` changes rendering, not the regex; the counterweight extends to the new path. Case 14 green in-suite.
+  **AC6 — re-checked, because case 15's fixture path was renamed.** Case 15 green at HEAD. Its self-check verified live by deleting the main-side edit → `FAIL: backfill fixture — no conflicted raw/ path, so the case proves nothing` fires. The check needed its own `-c core.quotePath=false` to keep matching `^raw/`, and does have it.
+  **AC7** — `/bin/bash --version` → `3.2.57(1)-release`; `bash -n` clean over all 5 `bin/` scripts; both suites green.
+- DONE: The negative case exercised: revert the guard block, confirm cases 11-13 go red, restore it — and check each case's assertion SHAPE.
+  Carried forward from cycle 1 for cases 11-13 and 15. New this cycle: the single-token falsification above, whose shape is the strongest in the suite — the red run does not merely change an exit code, it lands `<<<<<<< ` in a commit on `main` under the incident's own commit subject. Case 15 stays green under that same falsification, which is the independent evidence that backfill does not depend on the token.
+- DONE: Both tests/test-guard.sh and tests/test-fetch.sh run under /bin/bash 3.2, with the pre-existing seed confirmed byte-unchanged.
+  `test-guard: ALL PASS` (17 assertions, exit 0) and `test-fetch: ALL PASS` (exit 0). Scope of the rework confirmed line-by-line: `bin/wiki-ingest-run` has exactly **one** removed line, replaced by itself plus `-c core.quotePath=false`, and five comment lines — the cycle-1 guard is otherwise byte-identical. The seed block is byte-identical again; the six lines removed from `tests/test-guard.sh` are all the case-15 fixture rename, none touching the seed or any pre-existing case.
+
+### The backfill asymmetry claim — checked, not accepted
+
+Correct, and for a reason that can be checked rather than argued. Static: `git show ":$p"` at `bin/wiki-ingest-run:698` is the **only** place either script feeds a git-produced path back to git as an argument. Every git call in `wiki-ingest-backfill` takes a literal path (`raw/`, `ingest-queue.md`) or none, and `$UNMERGED` is only ever reached by `[ -n … ]`. Mechanism measured: with the only conflicted path non-ASCII, `diff --name-only --diff-filter=U` is non-empty under *both* quotePath settings — only the rendering differs, and emptiness is all the guard tests. Behavioural, both branches exercised separately: in-progress (rc=1, index stages `1 2 3`, `MERGE_HEAD` survives) and, with the merge markers removed to isolate it, the unmerged branch (rc=1, stages `1 2 3`).
+
+### Findings — one new, non-material, not fixed
+
+1. **Polish — the two unmerged-paths messages print the C-quoted path.** Observed: `wiki-ingest-backfill: … has unmerged paths — refusing to commit: "raw/Backfill \342\200\224 Conflicted Source.md"`. Cosmetic only: the guard fires, exits non-zero, and preserves state; no AC is affected, and the ASCII portion still identifies the file. The same one-token fix would apply at `bin/wiki-ingest-run:676` and `bin/wiki-ingest-backfill:83`. **Correct-but-disproportionate** — recording a decline, not a fix, and it does not block.
+2. **Observation, out of scope — `wiki-ingest-backfill` has no marker-scan equivalent**, so it has no AC4 counterpart: markers already sitting in a `raw/` file with no operation in progress would still be committed by its `git add raw/`. This is pre-existing and matches the ideation-approved scope ("the same in-progress/unmerged block"), not a regression from this rework, and I am not asking to widen the fix. Promote if a markered `raw/` file is ever observed with no operation in progress.
+
+### Summary
+
+Recommend **PASSED**. The rejection was right and my cycle-1 triage was wrong for the reason given: I measured non-ASCII paths with a tool that had already escaped them, so the census could only ever read clean. Re-measured correctly, the live wiki carries 80 such paths today, one topic page in twelve.
+
+The rework closes it. AC4 now fires on quoted paths, and removing the single token puts conflict markers back onto `main` while leaving the ASCII case green — the falsification separates the two cases exactly. The changed input to the marker scan introduces no over-firing on legitimate em-dash-named pages, case 15's self-check still fires under its new non-ASCII fixture, and the backfill asymmetry argument holds both statically and behaviourally. One new finding, cosmetic and declined; nothing here needs the Captain.
