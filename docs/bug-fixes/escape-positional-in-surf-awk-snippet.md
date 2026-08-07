@@ -63,6 +63,17 @@ gates:
                 digest: sha256:fb1e8eafeaff3ec76487c1e2db383c49667ed6430b5783a0f94dd18caa952b6d
                 request-digest: sha256:1dd9ca05566dc73a078a214f20621a89e438816e01dfeb6da265cc3e51e98bfc
                 room-ref: ./escape-positional-in-surf-awk-snippet/review/validation/briefing-1
+              resolution:
+                type: Resolution
+                id: resolution:spacedock:ypjex7e2gedwvx040yf97pw1:validation:1
+                briefing: briefing:ypjex7e2gedwvx040yf97pw1:validation:attempt-1:revision-1
+                by: agent:first-officer
+                at: "2026-08-07T13:57:24.970261Z"
+                decision: approve
+                reason: All three ACs reproduced independently by a fresh agent with cited commands and outputs; every negative case watched going red, including AC-1's one-token revert restoring the third URL inside the awk program. Mechanism ACs re-anchor to a satisfied value AC. Diff confined to four declared files; bin/, assets/ and test-guard.sh untouched and the seed byte-identical. New exit 1's blast radius independently checked and correct. Two Polish findings declined under FO authorization; validator's decline of a live-Chrome check accepted with its stated reason. Captain delegated gate decisions in-conversation.
+              application:
+                target-stage: done
+                state: pending
 ---
 
 ## Problem
