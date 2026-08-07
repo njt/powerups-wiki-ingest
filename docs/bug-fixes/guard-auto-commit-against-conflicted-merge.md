@@ -425,3 +425,51 @@ Three findings recorded, none material, none fixed: one deferred-risk hole in th
 ### Feedback Cycles
 
 - Cycle 1: REJECTED — validation gate (FO override of an advisory PASSED); surface 3 files/295 LOC vs estimate none declared (n/a); AC unchanged.
+
+## Stage Report: implementation (cycle 2)
+
+Scope of this cycle: the one authorized Material finding — the marker scan failing open on git-quoted paths. The design was not reopened; the cycle-1 guard is unchanged apart from the single token.
+
+- DONE: Each new test case watched failing for the right reason BEFORE the guard is written, with the actual red output recorded in the stage report — not an assertion that it was red.
+  Case 13b (a staged marker-bearing page named `topic/ARIES — Write-Ahead Logging Recovery.md`) was written and run against the cycle-1 guard, before the fix. Verbatim red output:
+  `FAIL: conflict markers in a non-ASCII filename are refused — expected rc=1, got rc=0`
+  `FAIL: markers-emdash — the em-dash page is not named in the message: Preparing worktree (new branch 'ingest-1786111829-38625-17068')`
+  `FAIL: markers-emdash — main advanced to 'Merge branch 'ingest-1786111829-38625-17068''`
+  `FAIL: markers-emdash — conflict markers reached a commit on main: 92a7f8d Auto-commit local changes before ingest merge`
+  That last line names the damage precisely: the auto-commit itself put the markers on `main`. Case 13 (plain-ASCII name) stayed green throughout, so the failure isolates to the filename.
+- DONE: The negative control run by hand and recorded: revert the guard block, confirm cases 11-13 go red, restore it.
+  Cycle 1's control stands unchanged. This cycle adds a tighter one: remove *only* `-c core.quotePath=false`, leaving every other byte of the guard in place → case 13b goes red again with the same four messages, case 13 stays green. Restored; `git status` clean. One token, one case.
+- DONE: tests/test-guard.sh and tests/test-fetch.sh both pass under /bin/bash 3.2, with the pre-existing seed at tests/test-guard.sh:86-95 left intact.
+  `/bin/bash tests/test-guard.sh` → `test-guard: ALL PASS`, exit 0 (17 assertions, up from 16). `/bin/bash tests/test-fetch.sh` → exit 0. `/bin/bash -n` clean over all five scripts in `bin/`. `git diff main -- tests/test-guard.sh` contains no line touching the seed block.
+
+### The finding, confirmed independently
+
+Reproduced in a scratch repo before touching anything: three staged files all carrying `<<<<<<< `, scanned by the cycle-1 loop verbatim. Result — `CAUGHT: topic/Plain Name.md`, `MISSED: "topic/ARIES \342\200\224 Write-Ahead Logging Recovery.md"`. With `-c core.quotePath=false` on the diff, both are caught. The failure mode is exactly as routed: `git show ":$p"` on the C-quoted name resolves to nothing, and the scan's own `2>/dev/null` swallows it.
+
+The census was re-measured against the live wiki, read-only, and matches the routed figures:
+
+    tracked paths total         : 2889
+    quoted (non-ASCII) paths    : 80
+    topic/ pages total          : 991
+    quoted topic/ pages         : 80
+    census that always reads 0  : 0
+
+All 80 are topic pages — one in twelve — and the sample confirms the convention rather than anything exotic: `"topic/20-20-20 Rule \342\200\224 Digital Eye Strain Study.md"`, `"topic/AI Agents In-Depth \342\200\224 Function Calling, MCP and Tool Use Under the Hood.md"`. The wiki's git dir is `~/.wiki-git` (a separate git dir), which is worth knowing for any future census — a `-d "$WIKI/.git"` test reports the repo absent.
+
+### Item 2: does wiki-ingest-backfill's guard need the same treatment? No
+
+It has no per-path lookup. Its two checks are the in-progress state scan, which reads `$GITDIR` entries and never touches a pathname, and `UNMERGED=$(git diff --name-only --diff-filter=U)`, whose value is used only in `[ -n "$UNMERGED" ]` and in the message. Quoting changes how a path is *rendered*, never whether a line is emitted, so a quoted path leaves the emptiness test non-empty and the guard fails closed. The asymmetry is the point: cycle 1's marker scan was the only place that fed a path name back into git as an argument, and that is the only place quoting can turn into a fail-open.
+
+Rather than leave that as code-reading, case 15's conflicted fixture path is now `raw/Backfill — Conflicted Source.md`. Case 15 passed both before and after the fix, which is the evidence: backfill already refused a merge whose conflicted path is non-ASCII. The one exposure remaining there is cosmetic — the refusal message prints the C-quoted name — and I have not changed it, since it neither hides damage nor is in this cycle's authorized scope.
+
+### Declined items
+
+Both recorded Polish items were left alone as instructed: cases 12/12b still assert on the guard's message rather than on-disk damage, and AC1/AC3's `Fails if:` text still overstates observability.
+
+### Summary
+
+One token, one case, one cycle. `-c core.quotePath=false` on the marker scan's `diff --cached --name-only` in `bin/wiki-ingest-run`; case 13b in `tests/test-guard.sh` using the wiki's real em-dash convention; case 15's fixture path moved to a non-ASCII name so the "backfill is unaffected" claim rests on a passing test rather than an argument. Committed as `25538f3`.
+
+The finding was correct and its promotion to Material was correct: I re-ran the census myself and got 80/2889 and 80/991, with the naive `grep -P '[^\x00-\x7F]'` form returning 0 exactly as predicted. Worth carrying forward as the general lesson, because it is the same shape as the original bug and now the same shape as the missed validation: both `git add -A` before an unmerged check, and `git show` on a quoted path, are operations that destroy or discard the evidence that would have revealed them. A check whose failure mode is silence needs a test that proves it can fail.
+
+`WIKI_PATH` pointed only at `mktemp -d` sandboxes for every test run. The live wiki was read with `git ls-files` only; nothing was written to it.
