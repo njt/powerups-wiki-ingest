@@ -1,0 +1,24 @@
+{
+  "type": "Briefing",
+  "version": "1",
+  "id": "briefing:jcpfnk0aasbcqxz52ej6cvk1:ideation:attempt-1:revision-1",
+  "question": "Is the design sound, and what happens to AC6, which is a Captain call?",
+  "artifacts": [
+    {
+      "id": "artifact:jcpfnk0aasbcqxz52ej6cvk1:ideation:attempt-1:revision-1:item-1",
+      "uri": "git-root://main/1a2a3a7afea285b1898db1f64f3e988a33604293/docs/bug-fixes/_gates/pxf4-ideation.md",
+      "rev": "sha256:34e3c4d4cb08bd30800f72e8b6a8192fd91075a18a5fa108fd7247d9d1dd8afd",
+      "mediaType": "text/markdown",
+      "summary": "Decisive finding: a slug collision is not a duplicate, so the kata's guess (teach dupcheck target-slug awareness) would make it reject genuinely new sources — worse than the bug. Design instead reuses dupcheck as a URL-to-owning-file lookup, which is exactly what separates a legitimate --force re-ingest from a real collision; verified to find even a hand-renamed slug no rule would generate. Defect is wider than reported: same-host collisions exist and query-stripping collapses every HN item to 'item', hence the numeric tail. --summary-only correctly in scope as the fix's own second-order consequence. Option (b) costed as a five-step migration and declined. AC6 (suffix shape) declared interactive and carried forward unsatisfied — mechanism is independent of the token, nothing is renamed, no ingest runs before the Captain wakes. Recommend approve."
+    }
+  ],
+  "context": [
+    {
+      "type": "Reference",
+      "id": "reference:jcpfnk0aasbcqxz52ej6cvk1:ideation:attempt-1:revision-1:item-2",
+      "uri": "git-root://main/1a2a3a7afea285b1898db1f64f3e988a33604293/docs/bug-fixes/slug-collision-on-shared-path-segment.md",
+      "mediaType": "text/markdown",
+      "rev": "sha256:cf3fe0217594c11e035f4b39772122aa253e83b41bb1630f8fcd3557067b649f"
+    }
+  ]
+}

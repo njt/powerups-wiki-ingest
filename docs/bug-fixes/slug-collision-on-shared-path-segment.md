@@ -34,6 +34,15 @@ gates:
               application:
                 target-stage: ideation
                 state: consumed
+        - id: gate:jcpfnk0aasbcqxz52ej6cvk1:ideation
+          stage: ideation
+          attempts:
+            - id: gate-attempt:jcpfnk0aasbcqxz52ej6cvk1-ideation-1
+              briefing:
+                id: briefing:jcpfnk0aasbcqxz52ej6cvk1:ideation:attempt-1:revision-1
+                digest: sha256:279ca0a1369894976f719d1992206de51079258270bcefc1188e6bcf0c752b26
+                request-digest: sha256:417bdef5053f45b4cad63bf4fb27152af85ea37ff29818db6527023603cbf706
+                room-ref: ./slug-collision-on-shared-path-segment/review/ideation/briefing-1
 ---
 
 ## Problem
