@@ -1,0 +1,24 @@
+{
+  "type": "Briefing",
+  "version": "1",
+  "id": "briefing:ypjex7e2gedwvx040yf97pw1:backlog:attempt-1:revision-1",
+  "question": "Advance to ideation, concurrent with the cntt guard?",
+  "artifacts": [
+    {
+      "id": "artifact:ypjex7e2gedwvx040yf97pw1:backlog:attempt-1:revision-1:item-1",
+      "uri": "git-root://main/eeb49795a78e9d6c16cf41160f616e41008f5e4c/docs/bug-fixes/_gates/dw2f-backlog.md",
+      "rev": "sha256:7f4141edd6186a3ed8a2c7425374e8e50585277aa891b6b651c5f0605117d559",
+      "mediaType": "text/markdown",
+      "summary": "Real defect: bare $2 in the documented awk snippet is replaced by the user's second URL, emptying TAB_ID and silently killing the surf fallback for every multi-URL batch. Smallest diff in the backlog, zero file overlap with the cntt guard. Ideation must declare the verification offline or interactive; a grep over the markdown is a banned tautology. Recommend approve, concurrent."
+    }
+  ],
+  "context": [
+    {
+      "type": "Reference",
+      "id": "reference:ypjex7e2gedwvx040yf97pw1:backlog:attempt-1:revision-1:item-2",
+      "uri": "git-root://main/eeb49795a78e9d6c16cf41160f616e41008f5e4c/docs/bug-fixes/escape-positional-in-surf-awk-snippet.md",
+      "mediaType": "text/markdown",
+      "rev": "sha256:96265e9dbecf12f338c1494858db32a55a6bf1a6ab4f05f1a41d5c03bf21cb00"
+    }
+  ]
+}

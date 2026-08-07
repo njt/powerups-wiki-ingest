@@ -11,6 +11,18 @@ worktree:
 issue:
 pr:
 mod-block:
+gates:
+    version: 1
+    records:
+        - id: gate:ypjex7e2gedwvx040yf97pw1:backlog
+          stage: backlog
+          attempts:
+            - id: gate-attempt:ypjex7e2gedwvx040yf97pw1-backlog-1
+              briefing:
+                id: briefing:ypjex7e2gedwvx040yf97pw1:backlog:attempt-1:revision-1
+                digest: sha256:722a3c30af687b70b6f64191575cbd2f20955d7a7688c97b0030c9435cfb6b53
+                request-digest: sha256:1f56e391f7d382fe31b4d452a5eb67b2773684014ebebbfdbda05c16b21df46f
+                room-ref: ./escape-positional-in-surf-awk-snippet/review/backlog/briefing-1
 ---
 
 ## Problem

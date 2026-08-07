@@ -1,0 +1,24 @@
+{
+  "type": "Briefing",
+  "version": "1",
+  "id": "briefing:2enq6rq17z4ykkecg15y810w:backlog:attempt-1:revision-1",
+  "question": "Advance to ideation, dispatched first?",
+  "artifacts": [
+    {
+      "id": "artifact:2enq6rq17z4ykkecg15y810w:backlog:attempt-1:revision-1:item-1",
+      "uri": "git-root://main/eeb49795a78e9d6c16cf41160f616e41008f5e4c/docs/bug-fixes/_gates/cntt-backlog.md",
+      "rev": "sha256:c3cc6e51edfa385063c3d1d983a2b815733f7b73c826ca13c9d08f9b0d6d41d5",
+      "mediaType": "text/markdown",
+      "summary": "P1, only backlog item that has corrupted committed data: unguarded auto-commit wrote conflict markers into topic/Context Graphs.md on main and reported success. Bounded three-check guard, self-contained, must fail closed. Recommend approve, dispatch first."
+    }
+  ],
+  "context": [
+    {
+      "type": "Reference",
+      "id": "reference:2enq6rq17z4ykkecg15y810w:backlog:attempt-1:revision-1:item-2",
+      "uri": "git-root://main/eeb49795a78e9d6c16cf41160f616e41008f5e4c/docs/bug-fixes/guard-auto-commit-against-conflicted-merge.md",
+      "mediaType": "text/markdown",
+      "rev": "sha256:743c6a4c5a2a50f62bece17d58578acb2b45a6c566ef98b3eb67c5458e3d1f9d"
+    }
+  ]
+}

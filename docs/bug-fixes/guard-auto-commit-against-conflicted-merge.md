@@ -11,6 +11,18 @@ worktree:
 issue:
 pr:
 mod-block:
+gates:
+    version: 1
+    records:
+        - id: gate:2enq6rq17z4ykkecg15y810w:backlog
+          stage: backlog
+          attempts:
+            - id: gate-attempt:2enq6rq17z4ykkecg15y810w-backlog-1
+              briefing:
+                id: briefing:2enq6rq17z4ykkecg15y810w:backlog:attempt-1:revision-1
+                digest: sha256:1c2a3ba0e6936a089bbb993999ed525fa9920b50510ade66d69010edee5dff9d
+                request-digest: sha256:2a09fef14571d7de822022b41076ccd630ca86f965daee4ab9833d5b0655be01
+                room-ref: ./guard-auto-commit-against-conflicted-merge/review/backlog/briefing-1
 ---
 
 ## Problem
