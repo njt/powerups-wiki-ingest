@@ -331,3 +331,34 @@ The new test block is appended at the end and its cases are *named* (A-F) rather
 than numbered, so it will not produce duplicate case numbers when it meets the
 `cntt` branch's cases 11-15. A textual conflict at the trailing
 `[ "$fail" = 0 ] && echo ...` lines is still expected; both blocks should be kept.
+
+### Merge with cntt (kata cntt, now on main)
+
+Merged `main` at `6fa6a03` with `git merge --no-ff`. `bin/wiki-ingest-run` auto-merged
+cleanly — the two changes are 400 lines apart (`resolve_slug` call at line 386, cntt's
+guard at 791-836) and never touch the same hunk. `tests/test-guard.sh` conflicted in
+**three** places, not the one I predicted:
+
+1. The stub helper region — my `prompt_slug()` against cntt's `write_good_slug()`.
+2. The stub's `case` arms — my `autoslug`/`summary-autoslug` against cntt's
+   `good-slug`/`mid-merge`/`mid-cherry-pick`/`mid-rebase`.
+3. The trailing case block, as predicted.
+
+All three were additive on both sides, so all three kept both. cntt's numbered block
+stays where it was written, immediately after case 10; the named collision block A-F is
+appended at the true end of the file. Verified rather than assumed: no case-identity
+collision (1-15 and 13b vs A-F), all 13 stub modes distinct, every mode used by a case
+is defined, and the load-bearing seed block is untouched.
+
+Post-merge, all 27 assertions pass in one run — cntt's and mine together.
+`test-fetch.sh`, `repro.sh` and `/bin/bash -n` over every script in `bin/` are green.
+
+**The interaction check, run rather than read.** A combined green run does not by itself
+show the two changes are independent — one could be masking the other's failure. So each
+was disabled in turn *in the merged tree*:
+
+- cntt's guard off, `resolve_slug` on → **19** cntt-case FAIL lines, **0** collision-case FAIL lines.
+- `resolve_slug` off, cntt's guard on → **0** cntt-case FAIL lines, **16** collision-case FAIL lines.
+
+Cleanly orthogonal in both directions: each change is still individually load-bearing for
+its own cases and irrelevant to the other's. Nothing in the fix was changed for the merge.
