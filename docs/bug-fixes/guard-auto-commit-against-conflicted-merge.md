@@ -1,13 +1,13 @@
 ---
 id: 2enq6rq17z4ykkecg15y810w
 title: Guard auto-commit against in-progress and conflicted merges
-status: ideation
+status: implementation
 source: kata:cntt
 started: 2026-08-07T13:23:49Z
 completed:
 verdict:
 score: 0.9
-worktree:
+worktree: .worktrees/spacedock-ensign-guard-auto-commit-against-conflicted-merge
 issue:
 pr:
 mod-block:
@@ -53,7 +53,7 @@ gates:
                 reason: Mechanism confirmed first-hand with a runnable reproduction that exits 0 unguarded and 1 guarded. All three kata-proposed checks disproved with evidence (relative --git-dir, ls-files -u empty after add -A, setext-heading false positive). Guard placement and exit-not-skip both justified by observed damage. Seven offline ACs, each with a named test case and falsifying edit; AC5 guards against over-firing. Backfill kept in scope per Captain's standing rhyming-bugs practice in CLAUDE.md. Captain delegated gate decisions in-conversation.
               application:
                 target-stage: implementation
-                state: pending
+                state: consumed
 ---
 
 ## Problem
