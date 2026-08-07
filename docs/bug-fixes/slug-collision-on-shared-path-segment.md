@@ -54,6 +54,15 @@ gates:
               application:
                 target-stage: implementation
                 state: consumed
+        - id: gate:jcpfnk0aasbcqxz52ej6cvk1:validation
+          stage: validation
+          attempts:
+            - id: gate-attempt:jcpfnk0aasbcqxz52ej6cvk1-validation-1
+              briefing:
+                id: briefing:jcpfnk0aasbcqxz52ej6cvk1:validation:attempt-1:revision-1
+                digest: sha256:32630c0ed198f58c291470834c2aa13295643a1709a03c03a6b7b6e651c82013
+                request-digest: sha256:57093002fe52ee72d0ded1bb2e8d8f83b140dcb45a5d273a90bc67df7316c715
+                room-ref: ./slug-collision-on-shared-path-segment/review/validation/briefing-1
 ---
 
 ## Problem
