@@ -1,0 +1,24 @@
+{
+  "type": "Briefing",
+  "version": "1",
+  "id": "briefing:jcpfnk0aasbcqxz52ej6cvk1:validation:attempt-1:revision-1",
+  "question": "Do the ACs hold, and does the fix merge?",
+  "artifacts": [
+    {
+      "id": "artifact:jcpfnk0aasbcqxz52ej6cvk1:validation:attempt-1:revision-1:item-1",
+      "uri": "git-root://main/612c3b839a533ff5aa0aa2dd4e53e47f9d90b825/docs/bug-fixes/_gates/pxf4-validation.md",
+      "rev": "sha256:e34d6d669f99494e3f3f9275dba81b756bc98d9627a0c59052b443a96e67bfd1",
+      "mediaType": "text/markdown",
+      "summary": "Shipped behaviour is sound: AC1-AC5 each reproduced green and each watched failing under its own falsifying edit, in a scratch tree; 27/27 in the merged tree; duplicate-generator fires exactly where step 1 is removed; .git variant and --verbatim-only probed though no test covers them; orthogonality with cntt reproduces exactly. Rejecting on F1: the AC6 cost claim is false — the suffix token is encoded in four test literals, not one, and changing it makes the suite report the fail-closed guard as broken and main as having advanced on a refused source. Material because answering AC6 is this entity's declared next Captain action and the misleading output lands where he will certainly look, while the correcting note lives where he may not. Accept-with-note considered and declined for that reason. F2 polish folded in; F3 confirmed pre-existing; F4 residual declined and filed separately. Test-file only; no shipped behaviour changes."
+    }
+  ],
+  "context": [
+    {
+      "type": "Reference",
+      "id": "reference:jcpfnk0aasbcqxz52ej6cvk1:validation:attempt-1:revision-1:item-2",
+      "uri": "git-root://main/612c3b839a533ff5aa0aa2dd4e53e47f9d90b825/docs/bug-fixes/slug-collision-on-shared-path-segment.md",
+      "mediaType": "text/markdown",
+      "rev": "sha256:8dbb23bcdf4b6130c9abd39549b5a32b3f531ac56e67049c4a0936361923c734"
+    }
+  ]
+}
