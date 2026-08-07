@@ -11,6 +11,18 @@ worktree:
 issue:
 pr:
 mod-block:
+gates:
+    version: 1
+    records:
+        - id: gate:ghyj7yz18wnypbvkfa84vq0f:backlog
+          stage: backlog
+          attempts:
+            - id: gate-attempt:ghyj7yz18wnypbvkfa84vq0f-backlog-1
+              briefing:
+                id: briefing:ghyj7yz18wnypbvkfa84vq0f:backlog:attempt-1:revision-1
+                digest: sha256:3581e8324ed6d9c07aee0a50033fbcbb11cea03961972820ab78aad07f7589b9
+                request-digest: sha256:49f9da933b74739ceb7e1df3baf6ced9008912ebaf6722a45a9983f28ae98e29
+                room-ref: ./serialise-topic-page-merges/review/backlog/briefing-1
 ---
 
 ## Problem
