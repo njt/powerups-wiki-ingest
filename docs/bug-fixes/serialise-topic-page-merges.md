@@ -1,9 +1,9 @@
 ---
 id: ghyj7yz18wnypbvkfa84vq0f
 title: Stop concurrent ingests conflicting on shared topic pages (interim mitigation)
-status: backlog
+status: ideation
 source: kata:87sc (interim mitigation only)
-started:
+started: 2026-08-07T14:28:25Z
 completed:
 verdict:
 score: 0.7
@@ -11,6 +11,29 @@ worktree:
 issue:
 pr:
 mod-block:
+gates:
+    version: 1
+    records:
+        - id: gate:ghyj7yz18wnypbvkfa84vq0f:backlog
+          stage: backlog
+          attempts:
+            - id: gate-attempt:ghyj7yz18wnypbvkfa84vq0f-backlog-1
+              briefing:
+                id: briefing:ghyj7yz18wnypbvkfa84vq0f:backlog:attempt-1:revision-1
+                digest: sha256:3581e8324ed6d9c07aee0a50033fbcbb11cea03961972820ab78aad07f7589b9
+                request-digest: sha256:49f9da933b74739ceb7e1df3baf6ced9008912ebaf6722a45a9983f28ae98e29
+                room-ref: ./serialise-topic-page-merges/review/backlog/briefing-1
+              resolution:
+                type: Resolution
+                id: resolution:spacedock:ghyj7yz18wnypbvkfa84vq0f:backlog:1
+                briefing: briefing:ghyj7yz18wnypbvkfa84vq0f:backlog:attempt-1:revision-1
+                by: agent:first-officer
+                at: "2026-08-07T14:28:25.323741Z"
+                decision: approve
+                reason: 'Hardest failure evidence in the backlog: 6 of 37 URLs (16%) in one batch, every failure a deterministic content conflict on a topic/ page, which the 5x retry loop structurally cannot fix. Scoped as the Captain''s own named interim measure with the SQLite rearchitecture explicitly out of scope and staying open in 87sc. Sequenced last on purpose so it designs against a settled bin/wiki-ingest-run now that cntt''s guard has merged, avoiding the moving-target error the FO made in the pxf4 brief. Risk flagged forward: keep-both-sides is only obviously correct for additive edits, and six-for-six is a small sample. Captain delegated gate decisions in-conversation.'
+              application:
+                target-stage: ideation
+                state: consumed
 ---
 
 ## Problem

@@ -1,0 +1,24 @@
+{
+  "type": "Briefing",
+  "version": "1",
+  "id": "briefing:ghyj7yz18wnypbvkfa84vq0f:backlog:attempt-1:revision-1",
+  "question": "Advance to ideation as the interim mitigation, with the rearchitecture out of scope?",
+  "artifacts": [
+    {
+      "id": "artifact:ghyj7yz18wnypbvkfa84vq0f:backlog:attempt-1:revision-1:item-1",
+      "uri": "git-root://main/bf0618e90efb2ef740ffb027c3ddbfb93547dff2/docs/bug-fixes/_gates/87sc-backlog.md",
+      "rev": "sha256:f3f9929c5c996a9043a1b7af07d85c63cbfb40055fd32146ff575ebd97ab012c",
+      "mediaType": "text/markdown",
+      "summary": "Best failure statistics in the backlog: 6 of 37 URLs (16%) failed to merge in one batch, every one a content conflict on a topic/ page. index.md and log.md survive via merge=union; topic/ pages have no driver. The 5x retry loop cannot help because the conflict is deterministic — retry is the remedy for lock contention, not content conflict. Scoped as the Captain's own named interim measure, not the SQLite rearchitecture, which stays open in 87sc. Sequenced last deliberately so it designs against a settled wiki-ingest-run now that cntt's guard has merged. Risk for ideation: keep-both-sides is only obviously right because all six observed conflicts were additive; the design must say what happens when two ingests revise the same sentence. Recommend approve."
+    }
+  ],
+  "context": [
+    {
+      "type": "Reference",
+      "id": "reference:ghyj7yz18wnypbvkfa84vq0f:backlog:attempt-1:revision-1:item-2",
+      "uri": "git-root://main/bf0618e90efb2ef740ffb027c3ddbfb93547dff2/docs/bug-fixes/serialise-topic-page-merges.md",
+      "mediaType": "text/markdown",
+      "rev": "sha256:3bc2fdf835edb42711745c50c27dc8776266816f9a7f97756cc94b0fd02a798d"
+    }
+  ]
+}

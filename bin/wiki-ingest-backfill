@@ -62,8 +62,30 @@ total=$(wc -l < "$sorted" | tr -d ' ')
 echo "backfill: $total sources need raw/ (MINLEN=$MINLEN, throttle same/diff=${THROTTLE_SAME}/${THROTTLE_DIFF}s)"
 
 # --- Fetch loop ---------------------------------------------------------------
-prev_host=""; done_ok=0; queued=0; n=0
+prev_host=""; done_ok=0; queued=0; n=0; aborted=0
 commit_batch() {
+  # Refuse to stage into a repo that is mid-operation, and refuse before the
+  # `git add raw/` below: that add marks a conflicted raw/ path RESOLVED, and
+  # the commit then concludes the captain's merge with their unresolved tree in
+  # it — the same hazard as wiki-ingest-run's auto-commit (kata cntt), reached
+  # by this script's own code path. --absolute-git-dir, not --git-dir: the
+  # latter is relative and resolves against this script's cwd, not $WIKI.
+  GITDIR=$(git -C "$WIKI" rev-parse --absolute-git-dir 2>/dev/null || true)
+  INPROGRESS=""
+  for st in MERGE_HEAD CHERRY_PICK_HEAD REVERT_HEAD rebase-merge rebase-apply sequencer; do
+    if [ -n "$GITDIR" ] && [ -e "$GITDIR/$st" ]; then INPROGRESS="$INPROGRESS $st"; fi
+  done
+  if [ -n "$INPROGRESS" ]; then
+    echo "wiki-ingest-backfill: $WIKI has a git operation in progress ($INPROGRESS) — refusing to commit" >&2
+    echo "wiki-ingest-backfill: finish or abort it, then re-run." >&2
+    return 1
+  fi
+  UNMERGED=$(git -C "$WIKI" diff --name-only --diff-filter=U 2>/dev/null || true)
+  if [ -n "$UNMERGED" ]; then
+    echo "wiki-ingest-backfill: $WIKI has unmerged paths — refusing to commit: $(printf '%s' "$UNMERGED" | tr '\n' ' ')" >&2
+    return 1
+  fi
+
   # Stage separately: 'git add raw/ ingest-queue.md' fails atomically (stages
   # NOTHING) if ingest-queue.md doesn't exist yet — which would silently drop
   # all raw/ writes on a fresh wiki where nothing has been queued.
@@ -103,10 +125,19 @@ while IFS="$(printf '\t')" read -r slug url host; do
   fi
 
   if [ $((n % COMMIT_EVERY)) -eq 0 ]; then
-    echo "  … $n/$total ($done_ok ok, $queued queued)"; commit_batch
+    echo "  … $n/$total ($done_ok ok, $queued queued)"
+    # break, not exit: the loop's temp worklist still needs reaping below.
+    commit_batch || { aborted=1; break; }
   fi
 done < "$sorted"
 rm -f "$sorted"
 
-commit_batch
+if [ "$aborted" -eq 1 ]; then
+  echo "BACKFILL ABORTED: the wiki's repo state stopped the commit after $n/$total processed ($done_ok ok, $queued queued)" >&2
+  exit 1
+fi
+commit_batch || {
+  echo "BACKFILL ABORTED: the wiki's repo state stopped the final commit ($n/$total processed, $done_ok ok, $queued queued)" >&2
+  exit 1
+}
 echo "BACKFILL DONE: $done_ok verbatim written, $queued queued (of $n processed / $total total)"
