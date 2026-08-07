@@ -1,7 +1,7 @@
 ---
 id: ypjex7e2gedwvx040yf97pw1
 title: Bare $2 in the surf awk snippet is replaced by the user's second URL argument
-status: implementation
+status: validation
 source: kata:dw2f
 started: 2026-08-07T13:23:50Z
 completed:
@@ -54,6 +54,26 @@ gates:
               application:
                 target-stage: implementation
                 state: consumed
+        - id: gate:ypjex7e2gedwvx040yf97pw1:validation
+          stage: validation
+          attempts:
+            - id: gate-attempt:ypjex7e2gedwvx040yf97pw1-validation-1
+              briefing:
+                id: briefing:ypjex7e2gedwvx040yf97pw1:validation:attempt-1:revision-1
+                digest: sha256:fb1e8eafeaff3ec76487c1e2db383c49667ed6430b5783a0f94dd18caa952b6d
+                request-digest: sha256:1dd9ca05566dc73a078a214f20621a89e438816e01dfeb6da265cc3e51e98bfc
+                room-ref: ./escape-positional-in-surf-awk-snippet/review/validation/briefing-1
+              resolution:
+                type: Resolution
+                id: resolution:spacedock:ypjex7e2gedwvx040yf97pw1:validation:1
+                briefing: briefing:ypjex7e2gedwvx040yf97pw1:validation:attempt-1:revision-1
+                by: agent:first-officer
+                at: "2026-08-07T13:57:24.970261Z"
+                decision: approve
+                reason: All three ACs reproduced independently by a fresh agent with cited commands and outputs; every negative case watched going red, including AC-1's one-token revert restoring the third URL inside the awk program. Mechanism ACs re-anchor to a satisfied value AC. Diff confined to four declared files; bin/, assets/ and test-guard.sh untouched and the seed byte-identical. New exit 1's blast radius independently checked and correct. Two Polish findings declined under FO authorization; validator's decline of a live-Chrome check accepted with its stated reason. Captain delegated gate decisions in-conversation.
+              application:
+                target-stage: done
+                state: pending
 ---
 
 ## Problem
@@ -267,3 +287,50 @@ Also not attempted: a harness that reimplements Claude Code's `$N` substitution 
 The report's mechanism was wrong in a way that would have sunk the repro: substitution is **0-based**, so `$2` is the *third* argument and the bug needs **three or more** URLs — a two-URL repro passes on the unfixed file. Measured against the real expander, along with a full substitution table; the `Skill`-tool path behaves identically. Chose `$2` → `$NF` over the smaller `\$2` escape, because a literal `\$2` read without expansion is an awk syntax error producing the identical empty-`TAB_ID` failure this fix exists to remove, whereas `$NF` is correct on every reading path; `surf tab new`'s YAML makes `NF=2` structural on the `tabId:` line, confirmed against live output and an end-to-end `surf tab close`.
 
 Two things the gate should look at rather than take on trust. First, a second change is proposed beyond the one-token fix: the bail-out guard currently warns and exits **0** (measured), so the fallback proceeds with an empty `TAB_ID` — it is flagged as separable and droppable if the gate reads it as scope creep. Second, AC-2 passes on the *unfixed* file and can never go red on the expansion defect, because the on-disk text was always fine; that is stated plainly in the test plan rather than dressed up as coverage. Only AC-1 bears on the actual bug, and it costs an API call, so it cannot join the two no-network test scripts.
+
+## Stage Report: implementation
+
+- DONE: The AC-1 reproduction run against the FIXED file with three URLs, its transcript session id recorded, and the negative re-run against a reverted copy showing the URL reappear inside the awk program.
+  Fixed file, session `24c53798-c5e6-42ab-b34f-3f5cb3c15415` — exactly one matching line, `… | awk '{printf "%.0f\n", $NF}')`, no `http` anywhere in it. Reverted copy, session `c5a8503b-c735-430e-b0ef-9dd47f75a042` — `… | awk '{printf "%.0f\n", https://c.example/3}')`, the third URL, as predicted. The reverted copy is a one-token revert: `diff` against the fixed file reports line 70 only, `$NF` → `$2`. Probe copied as `wi-expansion-probe.md` and `cmp`-verified byte-identical each run.
+- DONE: Both new tests/test-fetch.sh cases watched failing for the right reason before the fix, with the actual red output recorded — including the literal backslash-$2 variant that is AC-2's only real red.
+  AC-3 went red on the genuinely unfixed file: `FAIL: guard block exited 0 with no tabId in surf output — it must bail, not fall through`. **AC-2 passed on the unfixed file**, exactly as the test plan states it must: the on-disk text was always well-formed, so AC-2 cannot go red on the expansion defect and is not coverage of it. Its real red is the literal `\$2` variant — `FAIL: documented tab-id pipeline yielded 'TAB_ID=', want 'TAB_ID=359286798'`, awk exiting 2 with `syntax error … >>> \ <<< $2`. The `sed`-strip variant is red too: `yielded 'TAB_ID=tabId: 3'`. Only AC-1 bears on the actual bug.
+- DONE: tests/test-fetch.sh and tests/test-guard.sh both pass under /bin/bash 3.2, with the tests/test-guard.sh seed untouched.
+  `/bin/bash` is 3.2.57(1)-release. After the fix: `test-fetch: ALL PASS` (rc=0) and `test-guard: ALL PASS` (all 10 cases). `git diff tests/test-guard.sh` is empty — the seed at lines 86–95 was never touched. The non-empty assertion on the extracted block was exercised rather than assumed: renaming the `TAB_ID=` anchor in a scratch copy yields `FAIL: tab-id block extracted empty — the sed anchors no longer match commands/wiki-ingest.md` as the first line of output.
+
+### Summary
+
+Commit `ef9fb96` carries the three approved changes and nothing else: `$2` → `$NF` on line 70, an explicit `exit 1` plus a third diagnostic clause ("tab id parsed out of the 'tabId:' line?") in the guard, and a Conventions line in `CLAUDE.md` recording the `$0`–`$9` trap. Nothing in `bin/` was touched, and no acceptance criterion is a text match over `commands/wiki-ingest.md` — AC-2 and AC-3 extract the documented block with `sed` and execute it against a stub `surf`, and AC-1's evidence is Claude Code's own session transcript.
+
+One measured divergence from ideation, immaterial to the fix: the `sed`-strip falsifier for AC-2 yields `TAB_ID=tabId: 3`, not `3` as the ideation note predicted — replacing the awk call also removes the field splitting, so the `tabId: ` prefix survives. The test still goes red for the stated reason. Nothing in the approved design turned out to be wrong.
+
+## Stage Report: validation
+
+- DONE: Each acceptance criterion's Verified by: clause reproduced yourself, citing the command you ran and what came back — not the implementation's self-report.
+  **AC-1 PASS.** Ran the `## Reproduction` block verbatim against the worktree's `commands/wiki-ingest.md`, three URLs, renamed sandbox copy (`cmp` clean), real `claude` binary — session `3dccb032-943a-4584-850e-86cd9ad75432`, transcript under `~/.claude/projects/-private-var-folders-…-tmp-y6GcoFX442/`. Exactly **1** matching line, ending `awk '{printf "%.0f\n", $NF}')`, no `http` in it. **AC-2 PASS / AC-3 PASS.** `/bin/bash tests/test-fetch.sh` → `test-fetch: ALL PASS`, rc=0; both new cases execute the `sed`-extracted block against the stub `surf`, they do not grep the markdown.
+- DONE: The negative case exercised: defeat the fix and confirm the check that should go red actually does.
+  AC-1: reverted copy (`diff` = line 70 only, `$NF`→`$2`), same command, session `60a71449-1d6f-4070-b8d9-c91401357f47` → `awk '{printf "%.0f\n", https://c.example/3}')` — the third URL is back inside the awk program. AC-2 red on the literal `\$2` variant (`yielded ''`) and on the `sed`-strip variant (`yielded 'TAB_ID=tabId: 3'`); AC-3 red with `exit 1` removed (`guard block exited 0 with no tabId in surf output`). Anchor-break falsifier fires too: renaming the `TAB_ID=` anchor gives `FAIL: tab-id block extracted empty` — the pair cannot pass on nothing. Variants at `…/scratchpad/v2/{esc,noexit,sedstrip,plain2,anchor}/`.
+- DONE: Both tests/test-fetch.sh and tests/test-guard.sh run under /bin/bash, and the tests/test-guard.sh seed confirmed unchanged.
+  `/bin/bash` 3.2.57(1)-release. `test-fetch: ALL PASS` (rc=0); `test-guard: ALL PASS`, all 10 cases (rc=0). `git diff main..HEAD -- tests/test-guard.sh` is empty; the seed at lines 92–95 (`summary/seeded.md`, `topic/Seeded Page.md`) is present and untouched.
+
+### Scope
+
+`git diff --name-only main..HEAD` = `CLAUDE.md`, `commands/wiki-ingest.md`, `tests/test-fetch.sh`, and this entity file (frontmatter `status` + reports). `git diff main..HEAD -- bin/ assets/ tests/test-guard.sh` is empty. Nothing moved that was not declared.
+
+### The `exit 1`'s blast radius
+
+Correct as written. It fires only when `TAB_ID` is empty, i.e. `surf tab new` failed or its output carried no `tabId:` line — both genuinely fatal for the surf fallback, since there is no tab to navigate. It cannot fire on a healthy path. Inside a `Bash` tool call it ends that call with a non-zero status; it cannot reach the parent agent or the sibling background ingests, which per `commands/wiki-ingest.md:47` are separate calls already finished before the fallback runs (`:51`). Skipping the `surf tab close` at `:91` on that path is right — no tab was created.
+
+### Findings (advisory; no candidate bytes touched)
+
+- **Polish — recommend decline.** The implementation report cites AC-2's literal-`\$2` red as `yielded 'TAB_ID='`; re-run against the committed file it is `yielded ''`, because the `exit 1` added by the same commit now aborts the runner before the `printf`. Same test, same reason, one character of prose drift. No user-visible loss, no AC at risk.
+- **Polish — recommend decline.** `exit 1` in a fenced block would close a *persistent interactive* shell if a human pasted the guard fragment alone. Not a supported workflow — the block is written for agents, and the alternative (falling through to `surf navigate --tab-id ""`) is the original silent failure.
+
+### Declined check, stated rather than hidden
+
+I did not drive real Chrome to re-confirm `NF=2` on live `surf tab new` output. The fixture was captured live at ideation, the structural argument holds (a YAML scalar float cannot contain whitespace, so the grepped `tabId:` line is two fields by construction), and I verified it on the fixture: `NF=2`, `$2` and `$NF` both `3.59286798e+08`. Creating a tab in the Captain's browser while he is asleep is a side effect no AC asked for.
+
+### Summary
+
+All three ACs reproduced independently and all three pass; the negative case for each was watched going red, including AC-1's — the reverted copy puts `https://c.example/3` back inside the awk program, so the fix demonstrably closes the expansion defect rather than passing vacuously. AC-2 passing on the unfixed-but-`$2` file was confirmed and is the disclosed limitation from the test plan, not a defect: on-disk text was always well-formed. Both test scripts green under bash 3.2, `test-guard.sh` byte-identical to `main`, diff confined to the four declared files.
+
+**Recommendation: PASSED.** Two Polish findings, both recommended for decline; neither is material and neither warrants touching this diff.

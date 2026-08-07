@@ -67,10 +67,11 @@ mkdir -p "$GRAB_DIR"
 # user's real tabs and navigate it away. IDs print as floats in scientific
 # notation (e.g. 3.59286798e+08): convert with printf %.0f — do NOT
 # sed-strip at the dot (that yields "3").
-TAB_ID=$(surf tab new --args-json '{"url":"about:blank"}' 2>/dev/null | grep "tabId:" | awk '{printf "%.0f\n", $2}')
+TAB_ID=$(surf tab new --args-json '{"url":"about:blank"}' 2>/dev/null | grep "tabId:" | awk '{printf "%.0f\n", $NF}')
 if [ -z "$TAB_ID" ]; then
-  echo "surf tab creation failed — Chrome running? extension loaded in the active profile?" >&2
+  echo "surf tab creation failed — Chrome running? extension loaded in the active profile? tab id parsed out of the 'tabId:' line?" >&2
   # bail out of the surf fallback entirely; do NOT fall back to grabbing an existing tab
+  exit 1
 fi
 
 # Sequential — reuse this one tab for every failed URL in the batch.
