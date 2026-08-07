@@ -43,6 +43,17 @@ gates:
                 digest: sha256:505f99e78a2654808f0d5216e9cb88b01b2d3fe8ec5ca095c2b125ee91a8a599
                 request-digest: sha256:bc8c08007ba9a92989a1fb0ed216da4e0b84e48e2f869b0ed1e1215f33d8f964
                 room-ref: ./escape-positional-in-surf-awk-snippet/review/ideation/briefing-1
+              resolution:
+                type: Resolution
+                id: resolution:spacedock:ypjex7e2gedwvx040yf97pw1:ideation:1
+                briefing: briefing:ypjex7e2gedwvx040yf97pw1:ideation:attempt-1:revision-1
+                by: agent:first-officer
+                at: "2026-08-07T13:41:38.119555Z"
+                decision: approve
+                reason: 'Expander measured directly rather than assumed: 0-based indexing means the bug needs three or more URLs, correcting both the kata issue and the FO''s own earlier summary. $NF chosen over the escape with verified reasoning — a literal backslash-$2 read without expansion reproduces the identical empty-TAB_ID failure. NF=2 structural in surf''s YAML, confirmed end-to-end. Bail-out exit 1 approved in scope as the silence mechanism per the README''s fail-closed-and-loudly rule. AC-1 accepted as an offline manual command driving the real binary; offline harness correctly refused as a second implementation of the thing under test. AC-2''s inability to go red on the expansion defect disclosed rather than dressed up. Captain delegated gate decisions in-conversation.'
+              application:
+                target-stage: implementation
+                state: pending
 ---
 
 ## Problem
