@@ -36,12 +36,28 @@ trap cleanup_all EXIT
 # --- stub LLM ----------------------------------------------------------------
 # wiki-ingest-run invokes $WIKI_INGEST_CLI with the worktree as CWD and the
 # prompt on stdin. The stub ignores both and writes whatever STUB_MODE says.
+#
+# Two families of mode live here. The STUB_SLUG modes hard-code the filename the
+# stub writes, which is what the completeness-guard cases need. The *-autoslug
+# modes instead read the slug out of the prompt they were handed, so they track
+# whatever slug wiki-ingest-run actually chose — required by the collision cases,
+# where the slug IS the thing under test and a hard-coded name could not observe
+# the script picking a different one.
 STUB="$SANDBOX/stub-cli"
 cat > "$STUB" <<'STUB_EOF'
 #!/bin/bash
 set -u
-cat >/dev/null   # drain the prompt
+prompt=$(cat)    # drain the prompt (the *-autoslug modes also read it)
 s="${STUB_SLUG:-unknown}"
+
+# "saved verbatim to raw/<slug>.md" appears in every ingest prompt.
+prompt_slug() {
+  local p
+  p=$(printf '%s' "$prompt" | sed -n 's|.*raw/\([A-Za-z0-9._-]*\)\.md.*|\1|p' | head -1)
+  [ -n "$p" ] || { echo "stub: could not find a slug in the prompt" >&2; exit 1; }
+  printf '%s' "$p"
+}
+
 case "${STUB_MODE:-nothing}" in
   nothing) ;;
   raw-only) ;;                      # leave the pipeline-staged raw/ file alone
@@ -70,6 +86,26 @@ case "${STUB_MODE:-nothing}" in
     printf -- '---\nurl: x\n---\n\nprecis\n' > "summary/$s.md"
     printf '# Extra\n\nbody\n' > "topic/Extra.md"
     printf -- '- entry\n' >> log.md
+    ;;
+  autoslug)
+    # A complete, correct ingest under whatever slug the script chose. The url
+    # is copied out of the staged raw/ file so every tier and every log pointer
+    # agrees with the archive that actually holds the source.
+    s=$(prompt_slug)
+    url=$(sed -n 's/^url: //p' "raw/$s.md" | head -1)
+    printf -- '---\nurl: %s\n---\n\nprecis of %s\n' "$url" "$url" > "summary/$s.md"
+    # Vary the body across re-ingests: a byte-identical rewrite stages nothing,
+    # and the completeness guard would then reject for want of a topic/ page.
+    printf '# %s\n\nbody rev %s\n' "${TOPIC_TITLE:-Auto Page}" "${TOPIC_REV:-1}" \
+      > "topic/${TOPIC_TITLE:-Auto Page}.md"
+    printf -- '- entry for %s -> raw/%s.md\n' "$url" "$s" >> index.md
+    printf -- '- entry for %s -> raw/%s.md\n' "$url" "$s" >> log.md
+    ;;
+  summary-autoslug)
+    # Backfill under whatever slug --summary-only resolved to. summary/ only.
+    s=$(prompt_slug)
+    url=$(sed -n 's/^url: //p' "raw/$s.md" | head -1)
+    printf -- '---\nurl: %s\n---\n\nprecis of %s\n' "$url" "$url" > "summary/$s.md"
     ;;
   *) echo "stub: unknown STUB_MODE ${STUB_MODE:-}" >&2; exit 1 ;;
 esac
@@ -208,6 +244,151 @@ check "--summary-only accepts a URL and derives the slug" 0 $?
 STUB_MODE=summary-good STUB_SLUG=orphan \
   "$BIN/wiki-ingest-run" --summary-only --repo https://github.com/o/r >/dev/null 2>"$SANDBOX/e10"
 check "--summary-only --repo is a usage error" 64 $?
+
+# =============================================================================
+# Slug-collision cases (kata pxf4)
+#
+# Two DIFFERENT sources whose URLs end in the same path segment used to collide
+# on raw/<slug>.md and summary/<slug>.md, the second silently overwriting the
+# first. These drive real wiki-ingest-run invocations and assert on committed
+# wiki state, like every case above, and all use STUB_MODE=*autoslug.
+#
+# Named rather than numbered on purpose: this block and the completeness cases
+# above are appended to by different branches, and duplicate case numbers after
+# a merge would be silent.
+# =============================================================================
+
+csum()      { md5 -q "$1" 2>/dev/null || md5sum "$1" | awk '{print $1}'; }
+raw_count() { ls -1 "$WIKI_PATH/raw" | wc -l | tr -d ' '; }
+
+SRC_A="$SANDBOX/collide-a.txt"
+SRC_B="$SANDBOX/collide-b.txt"
+printf 'ALPHA BODY. The blog post announcing widget-os, at a plausible length.\n' > "$SRC_A"
+printf 'BETA BODY. The widget-os repository README, a different source entirely.\n' > "$SRC_B"
+
+URL_A="https://blog.example.invalid/widget-os/"
+URL_B="https://code.example.invalid/example/widget-os"
+
+# --- collision case A: two sources sharing a last path segment (AC1) ---------
+STUB_MODE=autoslug TOPIC_TITLE="Widget OS Blog" \
+  "$BIN/wiki-ingest-run" --content "$SRC_A" "$URL_A" >/dev/null 2>"$SANDBOX/eca1"
+check "collision: first source ingests" 0 $?
+RAW_A="$WIKI_PATH/raw/widget-os.md"
+if [ ! -f "$RAW_A" ]; then
+  echo "FAIL: collision A — raw/widget-os.md missing, stderr: $(cat "$SANDBOX/eca1")"; fail=1
+fi
+a_raw=$(csum "$RAW_A" 2>/dev/null)
+a_sum=$(csum "$WIKI_PATH/summary/widget-os.md" 2>/dev/null)
+
+STUB_MODE=autoslug TOPIC_TITLE="Widget OS Repo" \
+  "$BIN/wiki-ingest-run" --content "$SRC_B" "$URL_B" >/dev/null 2>"$SANDBOX/eca2"
+check "collision: second source ingests without clobbering the first" 0 $?
+
+b_file=$(grep -rl "^url: $URL_B\$" "$WIKI_PATH/raw" 2>/dev/null | head -1)
+[ -n "$b_file" ] \
+  || { echo "FAIL: collision A — no raw/ archive holds $URL_B, stderr: $(cat "$SANDBOX/eca2")"; fail=1; }
+[ "$b_file" != "$RAW_A" ] \
+  || { echo "FAIL: collision A — both sources resolved to raw/widget-os.md"; fail=1; }
+if [ -n "$b_file" ]; then
+  grep -q "BETA BODY" "$b_file" \
+    || { echo "FAIL: collision A — $b_file does not hold the second source's body"; fail=1; }
+  b_slug=$(basename "$b_file" .md)
+  [ -f "$WIKI_PATH/summary/$b_slug.md" ] \
+    || { echo "FAIL: collision A — second source has no summary/$b_slug.md of its own"; fail=1; }
+  # The ONLY assertion on the suffix SHAPE. AC6 (the suffix scheme) is an open
+  # Captain decision; if it changes, this one line changes with it.
+  [ "$b_slug" = "widget-os-code-example" ] \
+    || { echo "FAIL: collision A — suffix shape is '$b_slug', expected 'widget-os-code-example'"; fail=1; }
+fi
+[ "$(csum "$RAW_A" 2>/dev/null)" = "$a_raw" ] \
+  || { echo "FAIL: collision A — raw/widget-os.md changed when the second source was ingested"; fail=1; }
+[ "$(csum "$WIKI_PATH/summary/widget-os.md" 2>/dev/null)" = "$a_sum" ] \
+  || { echo "FAIL: collision A — summary/widget-os.md changed when the second source was ingested"; fail=1; }
+
+# --- collision case B: a --force re-ingest is NOT a collision (AC2) ----------
+# The URL is passed in a cosmetically different form than it was ingested with:
+# http vs https, leading www., no trailing slash, and a #fragment. dupcheck
+# folds all four, so this must update raw/widget-os.md IN PLACE. Re-deriving
+# the slug, or string-comparing the URL against stored url: values, would read
+# the incumbent as a foreign occupant and mint a suffixed duplicate — the
+# regression this fix is most likely to cause.
+URL_A_VARIANT="http://www.blog.example.invalid/widget-os#top"
+before_n=$(raw_count)
+STUB_MODE=autoslug TOPIC_TITLE="Widget OS Blog" TOPIC_REV=2 \
+  "$BIN/wiki-ingest-run" --force --content "$SRC_A" "$URL_A_VARIANT" >/dev/null 2>"$SANDBOX/ecb"
+check "collision: --force re-ingest of a cosmetic URL variant updates in place" 0 $?
+after_n=$(raw_count)
+[ "$before_n" = "$after_n" ] \
+  || { echo "FAIL: collision B — re-ingest added an archive ($before_n -> $after_n), stderr: $(cat "$SANDBOX/ecb")"; fail=1; }
+grep -q "^url: $URL_A_VARIANT\$" "$RAW_A" 2>/dev/null \
+  || { echo "FAIL: collision B — raw/widget-os.md was not the archive updated"; fail=1; }
+
+# --- collision case C: same host, same last segment, three sources (AC3) -----
+# A host-derived suffix alone does not separate these; the numeric tail does.
+i=0
+for owner in one two three; do
+  i=$((i + 1))
+  # Long enough to clear wiki-ingest-run's 40-non-whitespace-character content
+  # threshold, which is otherwise the first thing these ingests trip over.
+  printf 'GADGET BODY %s. Distinct article content belonging to owner %s and nobody else.\n' \
+    "$i" "$owner" > "$SANDBOX/gadget-$owner.txt"
+  STUB_MODE=autoslug TOPIC_TITLE="Gadget $owner" \
+    "$BIN/wiki-ingest-run" --content "$SANDBOX/gadget-$owner.txt" \
+    "https://code.example.invalid/$owner/gadget" >/dev/null 2>"$SANDBOX/ecc-$owner"
+  check "collision: same-host source '$owner' ingests" 0 $?
+done
+gadget_files=""
+for owner in one two three; do
+  f=$(grep -rl "^url: https://code.example.invalid/$owner/gadget\$" "$WIKI_PATH/raw" 2>/dev/null | head -1)
+  if [ -z "$f" ]; then
+    echo "FAIL: collision C — no raw/ archive holds .../$owner/gadget"; fail=1; continue
+  fi
+  case "$gadget_files" in
+    *" $f "*) echo "FAIL: collision C — $f holds more than one of the three sources"; fail=1 ;;
+    *) gadget_files="$gadget_files $f " ;;
+  esac
+done
+
+# --- collision case D: --summary-only targets by URL, not by slug (AC4) ------
+# The archive's slug is NOT derivable from its URL (url_slug would say
+# "widget-os", which belongs to a different source). Resolving by URL is the
+# only way to backfill the right precis.
+printf -- '---\nurl: https://docs.example.invalid/manual/widget-os\ndate_fetched: 2026-08-01\n---\n\nHand-named archive body.\n' \
+  > "$WIKI_PATH/raw/widget-os-hand.md"
+git -C "$WIKI_PATH" add -A && git -C "$WIKI_PATH" commit -q -m "Seed a hand-named archive"
+incumbent_sum=$(csum "$WIKI_PATH/summary/widget-os.md" 2>/dev/null)
+STUB_MODE=summary-autoslug \
+  "$BIN/wiki-ingest-run" --summary-only https://docs.example.invalid/manual/widget-os \
+  >/dev/null 2>"$SANDBOX/ecd"
+check "collision: --summary-only resolves a URL to the archive that holds it" 0 $?
+[ -f "$WIKI_PATH/summary/widget-os-hand.md" ] \
+  || { echo "FAIL: collision D — summary/widget-os-hand.md missing, stderr: $(cat "$SANDBOX/ecd")"; fail=1; }
+[ "$(csum "$WIKI_PATH/summary/widget-os.md" 2>/dev/null)" = "$incumbent_sum" ] \
+  || { echo "FAIL: collision D — backfilled the wrong source (summary/widget-os.md changed)"; fail=1; }
+
+# --- collision case E: an exhausted slug ladder fails loudly (AC3) -----------
+# Every candidate is occupied by a different source. The one thing that must
+# never happen is a silent overwrite, so this is exit 1 with the candidates
+# named, and main must not advance.
+for c in zed zed-code-example zed-code-example-2 zed-code-example-3 \
+         zed-code-example-4 zed-code-example-5 zed-code-example-6 \
+         zed-code-example-7 zed-code-example-8 zed-code-example-9; do
+  printf -- '---\nurl: https://seed.example.invalid/%s\ndate_fetched: 2026-08-01\n---\n\nseed %s\n' \
+    "$c" "$c" > "$WIKI_PATH/raw/$c.md"
+done
+git -C "$WIKI_PATH" add -A && git -C "$WIKI_PATH" commit -q -m "Seed a fully occupied slug ladder"
+zed_sum=$(csum "$WIKI_PATH/raw/zed.md")
+before=$(head_subject)
+STUB_MODE=autoslug TOPIC_TITLE="Zed" \
+  "$BIN/wiki-ingest-run" --content "$SRC_A" https://code.example.invalid/q/zed \
+  >/dev/null 2>"$SANDBOX/ece"
+check "collision: exhausted slug ladder is rejected" 1 $?
+grep -q "zed-code-example-9" "$SANDBOX/ece" \
+  || { echo "FAIL: collision E — candidates not named in the message: $(cat "$SANDBOX/ece")"; fail=1; }
+[ "$(head_subject)" = "$before" ] \
+  || { echo "FAIL: collision E — main advanced to '$(head_subject)'"; fail=1; }
+[ "$(csum "$WIKI_PATH/raw/zed.md")" = "$zed_sum" ] \
+  || { echo "FAIL: collision E — raw/zed.md was overwritten"; fail=1; }
 
 [ "$fail" = 0 ] && echo "test-guard: ALL PASS"
 exit $fail
