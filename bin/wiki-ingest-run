@@ -18,8 +18,9 @@
 #   --dry-run         plumbing test: skip the LLM; write a marker file, merge the
 #                     ingest branch into a THROWAWAY branch created from main
 #                     (never into main), verify, clean up. Leaves zero trace.
-#   --summary-only    BACKFILL an existing source: the argument is a slug (or a
-#                     URL, which is slugified) naming an existing raw/<slug>.md.
+#   --summary-only    BACKFILL an existing source: the argument is a slug naming
+#                     an existing raw/<slug>.md, or a URL, which is resolved to
+#                     whichever archive actually holds it.
 #                     Nothing is fetched or cloned; the LLM reads that archive
 #                     and writes ONLY summary/<slug>.md. topic/, index.md and
 #                     log.md are left alone — the source is already indexed and
@@ -31,7 +32,8 @@
 #   3  no changes — fetch likely failed (orchestrator should retry with surf)
 #   64 usage error
 #   1  other failure — including, for --summary-only, a missing raw/<slug>.md,
-#      an LLM that wrote nothing, or one that wrote outside summary/
+#      an LLM that wrote nothing, or one that wrote outside summary/; and, for
+#      an ingest, a slug ladder with no free candidate left
 #
 # Targets bash 3.2 (macOS /bin/bash). Runs non-interactively (launchd-safe).
 
@@ -77,6 +79,115 @@ url_slug() {
   printf '%s' "$seg"
 }
 
+# THE SUFFIX SCHEME LIVES HERE AND NOWHERE ELSE.
+#
+# When a DIFFERENT source already owns the base slug, resolve_slug disambiguates
+# by appending this token (cloudflare-os -> cloudflare-os-github). The token's
+# SHAPE is a taste call about how the vault reads, not a correctness property:
+# the collision mechanism below works with any non-empty token. Change the body
+# of this one function to change the scheme; nothing else knows what it means.
+#
+# Current scheme: the canonical host minus its final dot-label.
+#   github.com -> github    blog.cloudflare.com -> blog-cloudflare
+slug_disambiguator() {
+  local u="$1" host tok
+  u="${u%%\?*}"; u="${u%%#*}"; u="${u#http://}"; u="${u#https://}"; u="${u#www.}"
+  host="${u%%/*}"
+  host=$(printf '%s' "$host" | tr '[:upper:]' '[:lower:]')
+  tok="${host%.*}"
+  [ -n "$tok" ] || tok="$host"
+  tok=$(printf '%s' "$tok" | tr -c 'a-z0-9' '-')
+  tok="${tok##-}"; tok="${tok%%-}"
+  [ -n "$tok" ] || tok="alt"
+  printf '%s' "$tok"
+}
+
+# owning_slug <wiki-or-worktree> <url> — print the slug of the archive that
+# ALREADY holds this URL, if exactly one does.
+#
+# Returns 0 and prints the slug; 1 when no archive holds it; 2 when the answer
+# is ambiguous or dupcheck itself failed. 2 is never a guess: guessing here
+# either duplicates a source or backfills the wrong one.
+#
+# The comparison is delegated to wiki-ingest-dupcheck rather than reimplemented
+# here. dupcheck already folds http/https, leading www., trailing /, #fragment
+# and trailing .git; a second copy of that logic would drift, and the drift
+# failure mode is exactly the re-ingest-duplication this exists to prevent.
+owning_slug() {
+  local w="$1" url="$2" dup_out drc names count
+  if [ ! -x "$SCRIPT_DIR/wiki-ingest-dupcheck" ]; then
+    echo "wiki-ingest-run: $SCRIPT_DIR/wiki-ingest-dupcheck missing or not executable — cannot tell a re-ingest from a slug collision" >&2
+    return 2
+  fi
+  set +e
+  dup_out=$(WIKI_PATH="$w" "$SCRIPT_DIR/wiki-ingest-dupcheck" "$url" 2>/dev/null)
+  drc=$?
+  set -e
+  case "$drc" in
+    1) return 1 ;;  # nothing holds it
+    0) : ;;
+    *) echo "wiki-ingest-run: dupcheck failed (rc=$drc) for $url — refusing to guess a slug" >&2
+       return 2 ;;
+  esac
+  # Un-indented output lines are file paths; the indented ones are title/date
+  # detail. raw/<s>.md and summary/<s>.md both matching is one slug, not two.
+  names=$(printf '%s\n' "$dup_out" | sed -n 's|^[^[:space:]].*/\([^/]*\)\.md$|\1|p' | sort -u)
+  count=$(printf '%s\n' "$names" | sed '/^$/d' | wc -l | tr -d ' ')
+  if [ "$count" -eq 1 ]; then
+    printf '%s' "$names"
+    return 0
+  fi
+  echo "wiki-ingest-run: $url is held by $count archives ($(printf '%s' "$names" | tr '\n' ' ')) — refusing to guess which one it belongs to" >&2
+  return 2
+}
+
+# resolve_slug <worktree> <url> — the slug this URL should be archived under.
+#
+# Step 1: if an archive already holds this URL, that IS its slug. This is the
+# --force re-ingest path and it must update in place; suffixing here would turn
+# every re-ingest into a duplicate, which is worse than the collision being
+# fixed. It also finds hand-chosen slugs no rule would generate.
+#
+# Step 2: otherwise this is a genuinely different source that happens to share a
+# last path segment. Walk a bounded ladder and take the first candidate no
+# archive owns. Both tiers are checked because migrated content can have a
+# summary/ with no raw/, and handing out that slug would attach this source's
+# archive to someone else's precis.
+#
+# Exhausting the ladder is exit 1 with the candidates named — never a silent
+# overwrite. (Exit codes 2 and 3 are reserved contract values.)
+resolve_slug() {
+  local wt="$1" url="$2" own orc base tok cand i tried
+  set +e; own=$(owning_slug "$wt" "$url"); orc=$?; set -e
+  case "$orc" in
+    0) printf '%s' "$own"; return 0 ;;
+    2) return 1 ;;  # message already printed
+  esac
+
+  base=$(url_slug "$url")
+  tok=$(slug_disambiguator "$url")
+  cand="$base"
+  tried=""
+  i=0
+  while :; do
+    if [ ! -e "$wt/raw/$cand.md" ] && [ ! -e "$wt/summary/$cand.md" ]; then
+      printf '%s' "$cand"
+      return 0
+    fi
+    tried="$tried $cand"
+    i=$((i + 1))
+    if [ "$i" -eq 1 ]; then
+      cand="$base-$tok"
+    elif [ "$i" -le 9 ]; then
+      cand="$base-$tok-$i"
+    else
+      echo "wiki-ingest-run: no free slug for $url — every candidate is taken by another source:$tried" >&2
+      echo "wiki-ingest-run: refusing to overwrite an existing archive; rename one by hand or widen the ladder" >&2
+      return 1
+    fi
+  done
+}
+
 REPO_MODE=0
 CONTENT_FILE=""
 FORCE=0
@@ -120,9 +231,20 @@ if [ "$SUMMARY_ONLY" -eq 1 ]; then
     exit 64
   fi
   # Slugs are [a-z0-9-] by construction (see url_slug); anything else is a URL.
+  # A URL is resolved to the archive that actually HOLDS it, not to whatever
+  # url_slug derives: once slugs can carry a collision suffix, the derived name
+  # may belong to an entirely different source and backfilling it would
+  # overwrite that source's precis. A bare slug is used as given, as before.
   case "$INGEST_URL" in
-    *[!a-z0-9-]*) SUMMARY_SLUG=$(url_slug "$INGEST_URL") ;;
-    *)            SUMMARY_SLUG="$INGEST_URL" ;;
+    *[!a-z0-9-]*)
+      set +e; SUMMARY_SLUG=$(owning_slug "$WIKI" "$INGEST_URL"); orc=$?; set -e
+      case "$orc" in
+        0) : ;;
+        1) echo "wiki-ingest-run: --summary-only: no archive in $WIKI holds $INGEST_URL" >&2; exit 1 ;;
+        *) exit 1 ;;  # owning_slug already explained why
+      esac
+      ;;
+    *)  SUMMARY_SLUG="$INGEST_URL" ;;
   esac
   if [ ! -f "$WIKI/raw/$SUMMARY_SLUG.md" ]; then
     echo "wiki-ingest-run: --summary-only: no such source raw/$SUMMARY_SLUG.md in $WIKI" >&2
@@ -258,7 +380,11 @@ SLUG=""
 if [ "$SUMMARY_ONLY" -eq 1 ]; then
   SLUG="$SUMMARY_SLUG"
 elif [ "$DRY_RUN" -ne 1 ]; then
-  SLUG=$(url_slug "$INGEST_URL")
+  # Resolved against the WORKTREE, which is a fresh checkout of main, and before
+  # anything is written into it: an unrelated source sharing this URL's last
+  # path segment must not have its raw/ and summary/ silently overwritten.
+  set +e; SLUG=$(resolve_slug "$WT" "$INGEST_URL"); rrc=$?; set -e
+  [ "$rrc" -eq 0 ] || exit 1
   FETCH="$SCRIPT_DIR/wiki-ingest-fetch"
   if [ ! -x "$FETCH" ]; then
     echo "wiki-ingest-run: $FETCH missing or not executable" >&2

@@ -390,5 +390,35 @@ grep -q "zed-code-example-9" "$SANDBOX/ece" \
 [ "$(csum "$WIKI_PATH/raw/zed.md")" = "$zed_sum" ] \
   || { echo "FAIL: collision E — raw/zed.md was overwritten"; fail=1; }
 
+# --- collision case F: an ambiguous owner fails closed -----------------------
+# A wiki where ONE url is already held by TWO different slugs (the hand-resolved
+# shape, where only one tier got renamed). The approved design does not say what
+# to do here, and both available guesses are bad: pick wrong and a --force
+# re-ingest silently rewrites the wrong archive, or backfills the wrong precis.
+# So neither call site guesses.
+printf -- '---\nurl: https://split.example.invalid/thing\ndate_fetched: 2026-08-01\n---\n\nsplit raw body\n' \
+  > "$WIKI_PATH/raw/split-one.md"
+printf -- '---\nurl: https://split.example.invalid/thing\n---\n\nsplit precis\n' \
+  > "$WIKI_PATH/summary/split-two.md"
+git -C "$WIKI_PATH" add -A && git -C "$WIKI_PATH" commit -q -m "Seed one url held by two slugs"
+split_raw=$(csum "$WIKI_PATH/raw/split-one.md")
+before=$(head_subject)
+STUB_MODE=autoslug TOPIC_TITLE="Split" \
+  "$BIN/wiki-ingest-run" --force --content "$SRC_A" https://split.example.invalid/thing \
+  >/dev/null 2>"$SANDBOX/ecf1"
+check "collision: --force re-ingest of an ambiguously-held URL is rejected" 1 $?
+grep -q "held by 2 archives" "$SANDBOX/ecf1" \
+  || { echo "FAIL: collision F — wrong message: $(cat "$SANDBOX/ecf1")"; fail=1; }
+STUB_MODE=summary-autoslug \
+  "$BIN/wiki-ingest-run" --summary-only https://split.example.invalid/thing \
+  >/dev/null 2>"$SANDBOX/ecf2"
+check "collision: --summary-only of an ambiguously-held URL is rejected" 1 $?
+grep -q "held by 2 archives" "$SANDBOX/ecf2" \
+  || { echo "FAIL: collision F — wrong --summary-only message: $(cat "$SANDBOX/ecf2")"; fail=1; }
+[ "$(head_subject)" = "$before" ] \
+  || { echo "FAIL: collision F — main advanced to '$(head_subject)'"; fail=1; }
+[ "$(csum "$WIKI_PATH/raw/split-one.md")" = "$split_raw" ] \
+  || { echo "FAIL: collision F — raw/split-one.md was rewritten"; fail=1; }
+
 [ "$fail" = 0 ] && echo "test-guard: ALL PASS"
 exit $fail
