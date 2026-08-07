@@ -1,0 +1,24 @@
+{
+  "type": "Briefing",
+  "version": "1",
+  "id": "briefing:ghyj7yz18wnypbvkfa84vq0f:ideation:attempt-1:revision-1",
+  "question": "Is this still the interim mitigation, and does it build tonight?",
+  "artifacts": [
+    {
+      "id": "artifact:ghyj7yz18wnypbvkfa84vq0f:ideation:attempt-1:revision-1:item-1",
+      "uri": "git-root://main/8252dc09520252a2298e0b80f0e8c96c942d68a7/docs/bug-fixes/_gates/87sc-ideation.md",
+      "rev": "sha256:deba19f8f28bc286833503ca2f47fd1faf2e1326ea690e11446c44567cfe5ceb",
+      "mediaType": "text/markdown",
+      "summary": "The backlog premise did not survive measurement: 11 real topic/ conflicts since 2026-08-05, not 6, and 4 are non-additive. Both proposed remedies falsified against them — a lock prevents 0 of 11 (proved by a repro whose merges are perfectly serialised and still conflict), and unbounded merge=union is silently wrong on 4, duplicating contradictory sentences and one whole 73-line page. Recommends union bounded by present-in-base plus empty-base-section, with a blank-line separator: 7 auto-resolved (5 byte-identical, 1 blank-line only, 1 strictly better than a commit that shipped conflict markers), 4 kept loud, 0 silently wrong. Plus exit-code retry classification and a fix for merge_with_retry's unconditional abort destroying a peer's merge state. Mutex is enabling, not curative. FO approves implementation and validation but will NOT merge without the Captain: highest blast radius of the night, AC6 and AC7 both interactive, and the design deliberately poses him a live choice. Implementation held until pxf4 merges, per its own test plan."
+    }
+  ],
+  "context": [
+    {
+      "type": "Reference",
+      "id": "reference:ghyj7yz18wnypbvkfa84vq0f:ideation:attempt-1:revision-1:item-2",
+      "uri": "git-root://main/8252dc09520252a2298e0b80f0e8c96c942d68a7/docs/bug-fixes/serialise-topic-page-merges.md",
+      "mediaType": "text/markdown",
+      "rev": "sha256:df3d0e5db0452d23cdfc7f347c6a23e96e46b3678834a2912d4635f0e6cef233"
+    }
+  ]
+}

@@ -34,6 +34,15 @@ gates:
               application:
                 target-stage: ideation
                 state: consumed
+        - id: gate:ghyj7yz18wnypbvkfa84vq0f:ideation
+          stage: ideation
+          attempts:
+            - id: gate-attempt:ghyj7yz18wnypbvkfa84vq0f-ideation-1
+              briefing:
+                id: briefing:ghyj7yz18wnypbvkfa84vq0f:ideation:attempt-1:revision-1
+                digest: sha256:3d6281bc5f37e771041dd8def856f8f62463b0b8adef657716b4184b85b3d989
+                request-digest: sha256:defbb657fb0edc1e71e1930f36d90261fceae537edea1ae9f920d828c8cd76dd
+                room-ref: ./serialise-topic-page-merges/review/ideation/briefing-1
 ---
 
 ## Problem
