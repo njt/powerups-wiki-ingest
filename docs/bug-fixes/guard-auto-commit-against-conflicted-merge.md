@@ -1,7 +1,7 @@
 ---
 id: 2enq6rq17z4ykkecg15y810w
 title: Guard auto-commit against in-progress and conflicted merges
-status: implementation
+status: validation
 source: kata:cntt
 started: 2026-08-07T13:23:49Z
 completed:
