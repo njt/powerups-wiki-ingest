@@ -1,7 +1,7 @@
 ---
 id: jcpfnk0aasbcqxz52ej6cvk1
 title: Slug collision silently overwrites another source's raw, summary and topic files
-status: validation
+status: implementation
 source: kata:pxf4
 started: 2026-08-07T14:00:53Z
 completed:
