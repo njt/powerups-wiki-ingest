@@ -513,6 +513,15 @@ git -C "$WIKI_PATH" merge --abort 2>/dev/null || true
 csum()      { md5 -q "$1" 2>/dev/null || md5sum "$1" | awk '{print $1}'; }
 raw_count() { ls -1 "$WIKI_PATH/raw" | wc -l | tr -d ' '; }
 
+# The disambiguator wiki-ingest-run actually appends on a collision. Learned
+# from the script's own behaviour in case A, never hard-coded — see the comment
+# there. Cases that need to occupy the ladder build their fixtures from it.
+COLLISION_TOKEN=""
+seed_raw() {  # seed_raw <slug> — an archive owned by some other source
+  printf -- '---\nurl: https://seed.example.invalid/%s\ndate_fetched: 2026-08-01\n---\n\nseed %s\n' \
+    "$1" "$1" > "$WIKI_PATH/raw/$1.md"
+}
+
 SRC_A="$SANDBOX/collide-a.txt"
 SRC_B="$SANDBOX/collide-b.txt"
 printf 'ALPHA BODY. The blog post announcing widget-os, at a plausible length.\n' > "$SRC_A"
@@ -547,10 +556,20 @@ if [ -n "$b_file" ]; then
   b_slug=$(basename "$b_file" .md)
   [ -f "$WIKI_PATH/summary/$b_slug.md" ] \
     || { echo "FAIL: collision A — second source has no summary/$b_slug.md of its own"; fail=1; }
-  # The ONLY assertion on the suffix SHAPE. AC6 (the suffix scheme) is an open
-  # Captain decision; if it changes, this one line changes with it.
-  [ "$b_slug" = "widget-os-code-example" ] \
-    || { echo "FAIL: collision A — suffix shape is '$b_slug', expected 'widget-os-code-example'"; fail=1; }
+  # The suffix SHAPE, asserted structurally rather than against a literal, and
+  # the point at which the suite LEARNS the token instead of encoding it.
+  #
+  # AC6 (the suffix scheme) is an open Captain decision. He will change the
+  # derivation at bin/wiki-ingest-run:97 and re-run this file, so a hard-coded
+  # `widget-os-code-example` here — and, worse, a hard-coded ladder in case E —
+  # would report his taste call as a broken fail-closed guard. What is actually
+  # promised is base-preserving plus a non-empty disambiguator; the token's
+  # spelling is his to choose, so every later fixture derives from what the
+  # script just did rather than from what it did on 2026-08-08.
+  case "$b_slug" in
+    widget-os-?*) COLLISION_TOKEN="${b_slug#widget-os-}" ;;
+    *) echo "FAIL: collision A — second source's slug is '$b_slug', expected 'widget-os-' plus a non-empty disambiguator"; fail=1 ;;
+  esac
 fi
 [ "$(csum "$RAW_A" 2>/dev/null)" = "$a_raw" ] \
   || { echo "FAIL: collision A — raw/widget-os.md changed when the second source was ingested"; fail=1; }
@@ -622,25 +641,34 @@ check "collision: --summary-only resolves a URL to the archive that holds it" 0 
 # Every candidate is occupied by a different source. The one thing that must
 # never happen is a silent overwrite, so this is exit 1 with the candidates
 # named, and main must not advance.
-for c in zed zed-code-example zed-code-example-2 zed-code-example-3 \
-         zed-code-example-4 zed-code-example-5 zed-code-example-6 \
-         zed-code-example-7 zed-code-example-8 zed-code-example-9; do
-  printf -- '---\nurl: https://seed.example.invalid/%s\ndate_fetched: 2026-08-01\n---\n\nseed %s\n' \
-    "$c" "$c" > "$WIKI_PATH/raw/$c.md"
-done
-git -C "$WIKI_PATH" add -A && git -C "$WIKI_PATH" commit -q -m "Seed a fully occupied slug ladder"
-zed_sum=$(csum "$WIKI_PATH/raw/zed.md")
-before=$(head_subject)
-STUB_MODE=autoslug TOPIC_TITLE="Zed" \
-  "$BIN/wiki-ingest-run" --content "$SRC_A" https://code.example.invalid/q/zed \
-  >/dev/null 2>"$SANDBOX/ece"
-check "collision: exhausted slug ladder is rejected" 1 $?
-grep -q "zed-code-example-9" "$SANDBOX/ece" \
-  || { echo "FAIL: collision E — candidates not named in the message: $(cat "$SANDBOX/ece")"; fail=1; }
-[ "$(head_subject)" = "$before" ] \
-  || { echo "FAIL: collision E — main advanced to '$(head_subject)'"; fail=1; }
-[ "$(csum "$WIKI_PATH/raw/zed.md")" = "$zed_sum" ] \
-  || { echo "FAIL: collision E — raw/zed.md was overwritten"; fail=1; }
+if [ -z "$COLLISION_TOKEN" ]; then
+  echo "FAIL: collision E — no disambiguator learned in case A, so the ladder cannot be built"
+  fail=1
+else
+  # The ladder is <base>, <base>-<token>, <base>-<token>-2 .. -9, built from the
+  # token case A observed. Occupying it by construction rather than by literal
+  # is what keeps this case honest when the Captain settles AC6.
+  seed_raw zed
+  seed_raw "zed-$COLLISION_TOKEN"
+  i=2
+  while [ "$i" -le 9 ]; do
+    seed_raw "zed-$COLLISION_TOKEN-$i"
+    i=$((i + 1))
+  done
+  git -C "$WIKI_PATH" add -A && git -C "$WIKI_PATH" commit -q -m "Seed a fully occupied slug ladder"
+  zed_sum=$(csum "$WIKI_PATH/raw/zed.md")
+  before=$(head_subject)
+  STUB_MODE=autoslug TOPIC_TITLE="Zed" \
+    "$BIN/wiki-ingest-run" --content "$SRC_A" https://code.example.invalid/q/zed \
+    >/dev/null 2>"$SANDBOX/ece"
+  check "collision: exhausted slug ladder is rejected" 1 $?
+  grep -q "zed-$COLLISION_TOKEN-9" "$SANDBOX/ece" \
+    || { echo "FAIL: collision E — candidates not named in the message: $(cat "$SANDBOX/ece")"; fail=1; }
+  [ "$(head_subject)" = "$before" ] \
+    || { echo "FAIL: collision E — main advanced to '$(head_subject)'"; fail=1; }
+  [ "$(csum "$WIKI_PATH/raw/zed.md")" = "$zed_sum" ] \
+    || { echo "FAIL: collision E — raw/zed.md was overwritten"; fail=1; }
+fi
 
 # --- collision case F: an ambiguous owner fails closed -----------------------
 # A wiki where ONE url is already held by TWO different slugs (the hand-resolved
