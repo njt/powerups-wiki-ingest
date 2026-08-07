@@ -25,6 +25,7 @@ Never point `WIKI_PATH` at a real wiki when testing.
 - Scripts target bash 3.2 (macOS `/bin/bash`): no `mapfile`, no associative arrays, no negative indexing.
 - Config comes from env: `WIKI_PATH` (required), `WIKI_INGEST_CLI` (default `claude`). No hardcoded paths.
 - Scripts must NOT reference `${CLAUDE_PLUGIN_ROOT}` (broken in command markdown, issue #9354). Rely on `bin/`-on-PATH and `$(dirname "$0")` for sibling/asset lookups.
+- Command markdown must NOT contain `$0`–`$9` anywhere in its body, fenced code included. Claude Code replaces them with the user's arguments before the agent ever sees the text — 0-based, so `$2` becomes the *third* URL and silently rewrites the snippet into something that no longer runs. Out-of-range indices survive, so a short invocation hides it. In shell examples reach for `$NF`, or `$k` with `awk -v k=2`, or a form that does not start with `$`.
 - The LLM runs with `--allowedTools` as a real guardrail — do not add `--dangerously-skip-permissions` to the default path.
 
 ## Releasing
