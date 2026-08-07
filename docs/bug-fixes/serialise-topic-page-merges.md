@@ -43,6 +43,17 @@ gates:
                 digest: sha256:3d6281bc5f37e771041dd8def856f8f62463b0b8adef657716b4184b85b3d989
                 request-digest: sha256:defbb657fb0edc1e71e1930f36d90261fceae537edea1ae9f920d828c8cd76dd
                 room-ref: ./serialise-topic-page-merges/review/ideation/briefing-1
+              resolution:
+                type: Resolution
+                id: resolution:spacedock:ghyj7yz18wnypbvkfa84vq0f:ideation:1
+                briefing: briefing:ghyj7yz18wnypbvkfa84vq0f:ideation:attempt-1:revision-1
+                by: agent:first-officer
+                at: "2026-08-07T14:55:14.720318Z"
+                decision: approve
+                reason: 'Measured the backlog''s premise and falsified it: 11 real topic/ conflicts since 2026-08-05, not 6, with 4 non-additive. Both proposed remedies falsified against that corpus — a lock prevents 0 of 11 (repro''s merges are perfectly serialised and still conflict), unbounded merge=union is silently wrong on 4. Bounded union scores 7 auto-resolved / 4 kept loud / 0 silently wrong, including producing clean text where the cntt incident commit shipped markers. Retry classification corrected to exit-code-only after the first draft rule was shown wrong on a shared index, and a live hazard found in merge_with_retry''s unconditional abort destroying a peer''s merge state. Scope holds to the Captain''s own named interim measure; rearchitecture, prompt changes and synthesis re-runs all excluded on the record. FO approves implementation and validation ONLY: this will NOT be merged without the Captain, because it rewrites the merge critical section of a scheduled tool, AC6 and AC7 are both interactive and cannot be satisfied in his absence, and the design deliberately reserves a bounded-rule-vs-one-liner choice to him. Implementation held until pxf4 merges per the test plan''s own sequencing.'
+              application:
+                target-stage: implementation
+                state: pending
 ---
 
 ## Problem
