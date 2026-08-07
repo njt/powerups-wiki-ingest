@@ -256,3 +256,78 @@ Confirmed the mechanism first-hand rather than from the report: `url_slug()` at 
 The load-bearing decision is that a slug collision is **not** a duplicate. The kata guessed that `wiki-ingest-dupcheck` should gain target-slug awareness; that would make it exit 0 on a genuinely new source and reject it, which is worse than the bug. The design therefore leaves dupcheck unchanged and instead reuses it as the URL-to-owning-file lookup that separates a legitimate `--force` re-ingest from a real collision — verified against a seeded wiki, including a hand-renamed slug (`cloudflare-os-repo`) that no derivation rule would generate. That reuse also removed the need for any new shared-canonicalization plumbing, so the fix is one new function, two changed lines, and no change to dupcheck.
 
 Two things are flagged rather than papered over. AC6 is declared interactive: the suffix shape (`cloudflare-os-github`) is the kata's option but not what the 2026-08-06 hand resolution chose (`cloudflare-os-repo`), so it needs a Captain decision. And the dispatch brief's claim that the `cntt` guard is on main is wrong — `bd74a28` is not an ancestor of `main`; the branch is unmerged, and the real collision between the two is in `tests/test-guard.sh`, noted for the implementation stage.
+
+## Stage Report: implementation
+
+- DONE: Each new tests/test-guard.sh case watched failing for the right reason BEFORE the fix, with the actual red output recorded verbatim in the stage report.
+  Red output below, from `86ac6fb` (tests only, unfixed `bin/`); cases 1-10 stayed green throughout.
+- DONE: The re-ingest case proven not to duplicate: a --force re-ingest of an already-archived URL, passed with a trailing slash it was not ingested with, leaves the raw/*.md count unchanged and mints no suffixed file.
+  Collision case B; passes both before and after the fix, and fails (`5 -> 6`) when step 1 is disabled.
+- DONE: The host-token derivation isolated at a single point so the suffix scheme is a one-line change, since AC6 is an open Captain decision.
+  `bin/wiki-ingest-run:97` — `tok="${host%.*}"`, inside `slug_disambiguator()` at line 92.
+
+### The red run (verbatim, before the fix)
+
+    FAIL: collision A — both sources resolved to raw/widget-os.md
+    FAIL: collision A — suffix shape is 'widget-os', expected 'widget-os-code-example'
+    FAIL: collision A — raw/widget-os.md changed when the second source was ingested
+    FAIL: collision A — summary/widget-os.md changed when the second source was ingested
+    ok: collision: --force re-ingest of a cosmetic URL variant updates in place (rc=0)
+    FAIL: collision C — no raw/ archive holds .../one/gadget
+    FAIL: collision C — no raw/ archive holds .../two/gadget
+    FAIL: collision: --summary-only resolves a URL to the archive that holds it — expected rc=0, got rc=1
+    FAIL: collision D — summary/widget-os-hand.md missing, stderr: [...]
+          wiki-ingest-run: --summary-only wrote nothing for raw/widget-os.md
+    FAIL: collision: exhausted slug ladder is rejected — expected rc=1, got rc=0
+    FAIL: collision E — candidates not named in the message: [...]
+    FAIL: collision E — main advanced to 'Ingest: https://code.example.invalid/q/zed'
+    FAIL: collision E — raw/zed.md was overwritten
+
+Case B was green before the fix on purpose: it is the control, and the regression
+this change was most likely to cause. One case (C) first failed for the *wrong*
+reason — a 39-character fixture body against the 40-character content threshold,
+`rc=3` — and the fixture was lengthened before the red was accepted.
+
+### Falsification (each break was applied and run, not asserted)
+
+- Restore `SLUG=$(url_slug ...)` at the ingest call site → collision A fails, all four assertions.
+- Drop the numeric tail from the ladder → the third same-host source fails (`rc=1`), collision C and E fail.
+- Restore `url_slug` at the `--summary-only` call site → collision D fails; it targets `raw/thing.md`, a different source.
+- Make step 1 never recognise an existing owner → collision B fails, `raw/*.md` count `5 -> 6`. This is the duplicate-generator failure mode, and it is what step 1 exists to prevent.
+
+### Summary
+
+Built as approved: `resolve_slug` at the ingest call site, the same resolution for
+`--summary-only <url>`, and `wiki-ingest-dupcheck` untouched. Verified under
+`/bin/bash` 3.2.57; `test-guard.sh`, `test-fetch.sh` and the committed `repro.sh`
+are all green (AC5 is a real before/after — both suites were green at the start of
+this stage).
+
+**AC6, for the Captain.** The suffix scheme is `bin/wiki-ingest-run:97`, one line
+inside `slug_disambiguator()`. It currently yields `cloudflare-os-github`; the
+2026-08-06 hand resolution chose `cloudflare-os-repo`. Changing it touches that
+line and one deliberately-isolated test assertion (`tests/test-guard.sh`, the line
+checking `widget-os-code-example`) — every other assertion is name-agnostic. The
+mechanism works with any non-empty token, and nothing is renamed either way.
+
+**One case the design did not specify, decided fail-closed and flagged.** A URL
+already held by two *different* slugs (the hand-resolved shape, where only one
+tier was renamed) is ambiguous. The design says step 1 succeeds on exactly one
+distinct basename but not what to do otherwise; falling through to step 2 would
+mint a third archive. Both call sites now exit 1 unchanged, naming the archives.
+Reachable in practice only under `--force` — without it, the pre-existing dupcheck
+at line 167 has already exited 2. Covered by collision case F.
+
+**Not a regression, checked because the repro surfaced it.** `repro.sh` passes,
+but the `--force` re-ingest inside its control case exits 1 with
+`incomplete result — no summary/... staged`: byte-identical LLM output stages
+nothing. Confirmed the same input produces the same `rc=1` and the same message
+against `main`'s `bin/`, so this is pre-existing and not introduced here. The
+repro's control only asserts the archive count, which is why it stayed green;
+collision case B asserts `rc=0` as well and is the stronger AC2 proof.
+
+**Merge note.** 132/6 in `bin/wiki-ingest-run`, 212/1 in `tests/test-guard.sh`.
+The new test block is appended at the end and its cases are *named* (A-F) rather
+than numbered, so it will not produce duplicate case numbers when it meets the
+`cntt` branch's cases 11-15. A textual conflict at the trailing
+`[ "$fail" = 0 ] && echo ...` lines is still expected; both blocks should be kept.
