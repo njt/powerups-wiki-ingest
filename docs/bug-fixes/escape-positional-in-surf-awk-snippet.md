@@ -282,3 +282,35 @@ Two things the gate should look at rather than take on trust. First, a second ch
 Commit `ef9fb96` carries the three approved changes and nothing else: `$2` → `$NF` on line 70, an explicit `exit 1` plus a third diagnostic clause ("tab id parsed out of the 'tabId:' line?") in the guard, and a Conventions line in `CLAUDE.md` recording the `$0`–`$9` trap. Nothing in `bin/` was touched, and no acceptance criterion is a text match over `commands/wiki-ingest.md` — AC-2 and AC-3 extract the documented block with `sed` and execute it against a stub `surf`, and AC-1's evidence is Claude Code's own session transcript.
 
 One measured divergence from ideation, immaterial to the fix: the `sed`-strip falsifier for AC-2 yields `TAB_ID=tabId: 3`, not `3` as the ideation note predicted — replacing the awk call also removes the field splitting, so the `tabId: ` prefix survives. The test still goes red for the stated reason. Nothing in the approved design turned out to be wrong.
+
+## Stage Report: validation
+
+- DONE: Each acceptance criterion's Verified by: clause reproduced yourself, citing the command you ran and what came back — not the implementation's self-report.
+  **AC-1 PASS.** Ran the `## Reproduction` block verbatim against the worktree's `commands/wiki-ingest.md`, three URLs, renamed sandbox copy (`cmp` clean), real `claude` binary — session `3dccb032-943a-4584-850e-86cd9ad75432`, transcript under `~/.claude/projects/-private-var-folders-…-tmp-y6GcoFX442/`. Exactly **1** matching line, ending `awk '{printf "%.0f\n", $NF}')`, no `http` in it. **AC-2 PASS / AC-3 PASS.** `/bin/bash tests/test-fetch.sh` → `test-fetch: ALL PASS`, rc=0; both new cases execute the `sed`-extracted block against the stub `surf`, they do not grep the markdown.
+- DONE: The negative case exercised: defeat the fix and confirm the check that should go red actually does.
+  AC-1: reverted copy (`diff` = line 70 only, `$NF`→`$2`), same command, session `60a71449-1d6f-4070-b8d9-c91401357f47` → `awk '{printf "%.0f\n", https://c.example/3}')` — the third URL is back inside the awk program. AC-2 red on the literal `\$2` variant (`yielded ''`) and on the `sed`-strip variant (`yielded 'TAB_ID=tabId: 3'`); AC-3 red with `exit 1` removed (`guard block exited 0 with no tabId in surf output`). Anchor-break falsifier fires too: renaming the `TAB_ID=` anchor gives `FAIL: tab-id block extracted empty` — the pair cannot pass on nothing. Variants at `…/scratchpad/v2/{esc,noexit,sedstrip,plain2,anchor}/`.
+- DONE: Both tests/test-fetch.sh and tests/test-guard.sh run under /bin/bash, and the tests/test-guard.sh seed confirmed unchanged.
+  `/bin/bash` 3.2.57(1)-release. `test-fetch: ALL PASS` (rc=0); `test-guard: ALL PASS`, all 10 cases (rc=0). `git diff main..HEAD -- tests/test-guard.sh` is empty; the seed at lines 92–95 (`summary/seeded.md`, `topic/Seeded Page.md`) is present and untouched.
+
+### Scope
+
+`git diff --name-only main..HEAD` = `CLAUDE.md`, `commands/wiki-ingest.md`, `tests/test-fetch.sh`, and this entity file (frontmatter `status` + reports). `git diff main..HEAD -- bin/ assets/ tests/test-guard.sh` is empty. Nothing moved that was not declared.
+
+### The `exit 1`'s blast radius
+
+Correct as written. It fires only when `TAB_ID` is empty, i.e. `surf tab new` failed or its output carried no `tabId:` line — both genuinely fatal for the surf fallback, since there is no tab to navigate. It cannot fire on a healthy path. Inside a `Bash` tool call it ends that call with a non-zero status; it cannot reach the parent agent or the sibling background ingests, which per `commands/wiki-ingest.md:47` are separate calls already finished before the fallback runs (`:51`). Skipping the `surf tab close` at `:91` on that path is right — no tab was created.
+
+### Findings (advisory; no candidate bytes touched)
+
+- **Polish — recommend decline.** The implementation report cites AC-2's literal-`\$2` red as `yielded 'TAB_ID='`; re-run against the committed file it is `yielded ''`, because the `exit 1` added by the same commit now aborts the runner before the `printf`. Same test, same reason, one character of prose drift. No user-visible loss, no AC at risk.
+- **Polish — recommend decline.** `exit 1` in a fenced block would close a *persistent interactive* shell if a human pasted the guard fragment alone. Not a supported workflow — the block is written for agents, and the alternative (falling through to `surf navigate --tab-id ""`) is the original silent failure.
+
+### Declined check, stated rather than hidden
+
+I did not drive real Chrome to re-confirm `NF=2` on live `surf tab new` output. The fixture was captured live at ideation, the structural argument holds (a YAML scalar float cannot contain whitespace, so the grepped `tabId:` line is two fields by construction), and I verified it on the fixture: `NF=2`, `$2` and `$NF` both `3.59286798e+08`. Creating a tab in the Captain's browser while he is asleep is a side effect no AC asked for.
+
+### Summary
+
+All three ACs reproduced independently and all three pass; the negative case for each was watched going red, including AC-1's — the reverted copy puts `https://c.example/3` back inside the awk program, so the fix demonstrably closes the expansion defect rather than passing vacuously. AC-2 passing on the unfixed-but-`$2` file was confirmed and is the disclosed limitation from the test plan, not a defect: on-disk text was always well-formed. Both test scripts green under bash 3.2, `test-guard.sh` byte-identical to `main`, diff confined to the four declared files.
+
+**Recommendation: PASSED.** Two Polish findings, both recommended for decline; neither is material and neither warrants touching this diff.
