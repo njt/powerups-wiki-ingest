@@ -499,3 +499,43 @@ mechanism claim was sound throughout — only the cost claim was wrong, and it w
 wrong in the direction that would have made the Captain distrust a working fix at
 exactly the moment he exercised his own decision. The suite now derives the token
 instead of encoding it, so the claim the report makes is one the file enforces.
+
+## Stage Report: validation (cycle 2)
+
+Re-review of the cycle-2 rework only. Scope-limited as dispatched; every probe ran in a `cp -R` scratch tree and the candidate worktree was `git status` clean before and after (`8f8c460`).
+
+- DONE: Each of the six acceptance criteria reproduced yourself, citing the command you ran and what came back — not the implementation's self-report.
+  AC1–AC5 **carried forward from cycle 1, conditional on `bin/` being byte-identical — and it is**, verified three independent ways: `git diff 3dde6e2..HEAD -- bin/` empty; per-file shasums equal for all five `bin/` scripts; and a `diff` against the copy of `bin/wiki-ingest-run` I took in cycle 1 *before* any falsification. Only `tests/test-guard.sh` and the entity/gate docs moved. AC6 remains the Captain's and unsatisfied; its cost claim is what this cycle corrected and it now holds — see below.
+- DONE: The duplicate-generator failure mode exercised directly: disable step 1's owner lookup and confirm a --force re-ingest mints a second archive, then restore.
+  Re-run against the **reworked** suite, not carried forward: `orc=1` in place of the `owning_slug` call → `collision B — re-ingest added an archive (9 -> 10)` plus three collision-F failures. Restored; 27/27. The rework did not weaken this guard.
+- DONE: Both suites plus repro.sh green in the merged tree, with cntt's cases and the collision cases passing in one run and the test-guard.sh seed confirmed untouched.
+  `test-guard.sh` rc=0, 27 ok / 0 FAIL — 10 collision oks and 7 cntt oks in the same run; `test-fetch.sh` rc=0; `repro.sh` rc=0 `REPRO: PASS`; `bash -n` clean over `bin/` and `tests/`. All under `/bin/bash` 3.2.57. Seed block sha1 `47c4675e…`, still byte-identical to `main`'s.
+
+### The four dispatched checks
+
+**1 — The claim I rejected on now holds. CONFIRMED first-hand.** Changing `bin/wiki-ingest-run:97` alone, `tests/test-guard.sh` untouched, my own driver asserting the edit touched exactly one line: `tok="repo"` (the AC6 candidate) → **27/27**; `tok="x"` → **27/27**. I ran the other three in the implementation's table too — `tok="$host"`, `tok="${host%%.*}"`, and the shipped `tok="${host%.*}"` — all 27/27. All five rows reproduce. In cycle 1 the first of these produced four FAIL lines across two cases.
+
+**2 — The new assertions are NOT vacuous. Case A itself still goes red on real suffix defects.** The implementation only offered cases C and E as evidence; I broke the suffix behaviour three ways and checked case A specifically:
+- resolve_slug returns the base (the original clobber) → 4 case-A failures, incl. `second source's slug is 'widget-os', expected 'widget-os-' plus a non-empty disambiguator`.
+- disambiguator collapses to empty → case A red on `'widget-os-'`.
+- suffix replaces the base instead of extending it → case A red on `'code-example'`.
+In all three, case E additionally reports `no disambiguator learned in case A, so the ladder cannot be built` — the learned-token plumbing fails loudly instead of skipping silently, which is the failure mode a learn-from-behaviour design most invites. I also re-ran the implementation's own claim (drop the ladder's numeric tail) → case C and case E red, case A green, as stated.
+
+**3 — The scope caveat is accurate, neither over- nor under-claimed.** Verified in both directions: host-derived and constant tokens are all green (five schemes above), and a path-varying token does break case E and only case E — `tok` = second-to-last path segment (case A's URL gives `example`, case E's gives `q`) → 26 ok, 3 FAIL, all case E. I also probed a token varying with the *base slug* (first letter of the last path segment, `w` vs `z`) → same 3 case-E failures; the base slug is the last path segment, so this sits inside the caveat's "vary with the URL path" wording rather than outside it. In every such case the failure is **red, not silently green** — the safe direction.
+
+**4 — Scope confirmed.** `bin/` byte-identical (above); seed block untouched; one `code-example` literal remains and it is inside the explanatory comment at `tests/test-guard.sh:564`, as claimed.
+
+### Findings
+
+**None material. No new finding.** Two observations, neither requiring action:
+
+- *Recorded scope boundary, by design.* Case A's structural assertion accepts any non-empty base-preserving suffix, so it no longer distinguishes an informative token from an arbitrary one — `tok="x"` passes. That is the intended consequence of the F1 fix and precisely what AC6 reserves to the Captain; the properties AC1 actually promises (two archives, each holding its own URL, incumbent `raw/` and `summary/` byte-identical) are all still asserted and all still fail when broken, as proved above.
+- *Polish, not raised for disposition.* When case E's ladder assumption is broken by a path-varying scheme, its output is still the misleading `main advanced to 'Ingest: …'` shape. It could assert its precondition instead of inferring it. But that shape now appears only for a genuinely different design rather than a taste change, and the report names the caveat, so the cycle-1 harm is gone.
+
+### Summary
+
+The rework does what it claims and fixes what I rejected on. The load-bearing scope claim holds — `bin/` is byte-identical to cycle 1 by three independent measures, so AC1–AC5 carry forward intact and this cycle is test-file and report only. The claim I rejected on is now true first-hand: `tok="repo"` and a bare constant each leave the suite 27/27 with a single-line edit, where cycle 1 gave four failures across two cases.
+
+The important question was whether the fix traded a false cost claim for a vacuous test. It did not. Case A still goes red on three distinct real suffix defects, and the learned-token plumbing fails loudly rather than skipping when it cannot learn. The stated scope caveat is accurate in both directions, and the one place it bites fails red.
+
+**Recommendation: PASSED.** AC1–AC5 satisfied; AC6 correctly unsatisfied and now carrying a cost estimate the test file actually enforces, which is what the Captain needs in front of him when he makes that call.
