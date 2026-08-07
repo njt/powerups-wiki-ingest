@@ -34,6 +34,15 @@ gates:
               application:
                 target-stage: ideation
                 state: consumed
+        - id: gate:2enq6rq17z4ykkecg15y810w:ideation
+          stage: ideation
+          attempts:
+            - id: gate-attempt:2enq6rq17z4ykkecg15y810w-ideation-1
+              briefing:
+                id: briefing:2enq6rq17z4ykkecg15y810w:ideation:attempt-1:revision-1
+                digest: sha256:49fa0e2b3485786b86433a34db6a71fa9cec6112d36184ff645ba51ba9fe2241
+                request-digest: sha256:82ce470bd7243aa066c79ebe57520efd905b85154bf50dc11428d7c9ecf3bd84
+                room-ref: ./guard-auto-commit-against-conflicted-merge/review/ideation/briefing-1
 ---
 
 ## Problem

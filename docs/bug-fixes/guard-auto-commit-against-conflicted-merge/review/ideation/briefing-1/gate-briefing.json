@@ -1,0 +1,24 @@
+{
+  "type": "Briefing",
+  "version": "1",
+  "id": "briefing:2enq6rq17z4ykkecg15y810w:ideation:attempt-1:revision-1",
+  "question": "Is the guard design sound enough to build, and is wiki-ingest-backfill in scope?",
+  "artifacts": [
+    {
+      "id": "artifact:2enq6rq17z4ykkecg15y810w:ideation:attempt-1:revision-1:item-1",
+      "uri": "git-root://main/e40082aa731ce1b665843804828490a3e6db9f70/docs/bug-fixes/_gates/cntt-ideation.md",
+      "rev": "sha256:b1393af56a52e93786718b582fb750b1ba628be55469b6a3b53aebde1f7a497c",
+      "mediaType": "text/markdown",
+      "summary": "Ensign reproduced the bug and disproved all three checks the kata proposed: relative --git-dir never fires, ls-files -u is empty after add -A, and ^======= false-positives on markdown setext headings. Abort must exit, not skip, or merge_with_retry's git merge --abort destroys the captain's hand-resolution (observed). wiki-ingest-backfill hits the same class via its own commit_batch, reproduced twice. Seven ACs, all offline, each with a named test case and falsifying edit. Recommend approve with backfill in scope per the Captain's standing rhyming-bugs practice."
+    }
+  ],
+  "context": [
+    {
+      "type": "Reference",
+      "id": "reference:2enq6rq17z4ykkecg15y810w:ideation:attempt-1:revision-1:item-2",
+      "uri": "git-root://main/e40082aa731ce1b665843804828490a3e6db9f70/docs/bug-fixes/guard-auto-commit-against-conflicted-merge.md",
+      "mediaType": "text/markdown",
+      "rev": "sha256:254db10f08fe12d9b2d54abc264004b4d1bfd27a76463b02f12c43fb0e76cccc"
+    }
+  ]
+}
