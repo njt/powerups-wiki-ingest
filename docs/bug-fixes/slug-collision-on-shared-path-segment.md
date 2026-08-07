@@ -23,6 +23,17 @@ gates:
                 digest: sha256:ba4a07b53987615a7ba75837a82a291fedc59eb4d40b3aa86ad535dbe641d1ba
                 request-digest: sha256:809900c947c41b37daea594955bcc1d0e329908f8173bc3d4d0ae617d6a43a4f
                 room-ref: ./slug-collision-on-shared-path-segment/review/backlog/briefing-1
+              resolution:
+                type: Resolution
+                id: resolution:spacedock:jcpfnk0aasbcqxz52ej6cvk1:backlog:1
+                briefing: briefing:jcpfnk0aasbcqxz52ej6cvk1:backlog:attempt-1:revision-1
+                by: agent:first-officer
+                at: "2026-08-07T14:00:53.024093Z"
+                decision: approve
+                reason: Real defect with a first-hand 2026-08-06 instance naming both colliding URLs and the three files they fight over. Caught only by an unrelated merge conflict, and dupcheck misses it structurally by comparing source URLs rather than target slugs. Same silent-data-loss family as the two fixes already through. Slot freed by dw2f merging; sequenced third because it touches slug derivation adjacent to wiki-ingest-run. Captain delegated gate decisions in-conversation.
+              application:
+                target-stage: ideation
+                state: pending
 ---
 
 ## Problem
