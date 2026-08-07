@@ -340,6 +340,40 @@ grep -q "conflict markers" "$SANDBOX/e13" \
   || { echo "FAIL: markers-no-merge — conflict markers reached a commit on main"; fail=1; }
 git -C "$WIKI_PATH" checkout -q -- "topic/Context Graphs.md"
 
+# --- case 13b: markers in a page whose NAME is non-ASCII (AC4) ----------------
+# Under git's default core.quotePath, `diff --cached --name-only` C-quotes any
+# path containing a non-ASCII byte — it prints
+#   "topic/ARIES \342\200\224 Write-Ahead Logging Recovery.md"
+# quotes, backslash escapes and all. `git show ":$p"` on that name resolves to
+# nothing, fails, and the failure is swallowed by the scan's 2>/dev/null: the
+# check silently cannot fire. This is not a contrived case. The wiki's dominant
+# title convention separates title from subtitle with an em-dash (U+2014), and
+# `git -c core.quotePath=true ls-files | grep -c '^"'` counts 80 such paths of
+# 991 topic pages in the live wiki today — about one page in twelve.
+#
+# The censusing mistake is worth naming: `git ls-files | grep -P '[^\x00-\x7F]'`
+# reports 0 and always will, because quotePath has already replaced those bytes
+# with literal ASCII backslash escapes in git's own output. The quoting that
+# causes the bug is exactly what makes the census read clean.
+EMDASH_PAGE="topic/ARIES — Write-Ahead Logging Recovery.md"
+before=$(main_subject)
+printf '# ARIES\n\n<<<<<<< HEAD\nOUR VERSION\n=======\nTHEIR VERSION\n>>>>>>> conflicting\n' \
+  > "$WIKI_PATH/$EMDASH_PAGE"
+STUB_MODE=good-slug STUB_SLUG=case-thirteen-b \
+  "$BIN/wiki-ingest-run" --content "$SRC" https://example.invalid/case-thirteen-b >/dev/null 2>"$SANDBOX/e13b"
+check "conflict markers in a non-ASCII filename are refused" 1 $?
+grep -q "conflict markers" "$SANDBOX/e13b" \
+  || { echo "FAIL: markers-emdash — wrong message: $(cat "$SANDBOX/e13b")"; fail=1; }
+grep -q "ARIES — Write-Ahead Logging Recovery.md" "$SANDBOX/e13b" \
+  || { echo "FAIL: markers-emdash — the em-dash page is not named in the message: $(cat "$SANDBOX/e13b")"; fail=1; }
+[ "$(main_subject)" = "$before" ] \
+  || { echo "FAIL: markers-emdash — main advanced to '$(main_subject)'"; fail=1; }
+[ -z "$(git -C "$WIKI_PATH" diff --cached --name-only)" ] \
+  || { echo "FAIL: markers-emdash — index left staged: $(git -C "$WIKI_PATH" diff --cached --name-only | tr '\n' ' ')"; fail=1; }
+[ -z "$(markers_on_main)" ] \
+  || { echo "FAIL: markers-emdash — conflict markers reached a commit on main: $(markers_on_main)"; fail=1; }
+rm -f "$WIKI_PATH/$EMDASH_PAGE"
+
 # --- case 14: the auto-commit still does its job (AC5) ------------------------
 # Ordinary Obsidian-style edits, plus a page whose body carries a markdown
 # setext heading. A bare "=======" underline is legal markdown, so a marker
@@ -370,17 +404,23 @@ git -C "$WIKI_PATH" show "main:topic/Setext Page.md" | grep -q '^=======$' \
 # against unguarded bin/, case 11's ingest CONCLUDES that merge, so by the time
 # we get here `git merge conflicting` is already up to date and conflicts with
 # nothing. This case must be red against unguarded bin/ too.
+# The conflicted path carries an em-dash, the wiki's real title convention, so
+# this case also covers the quoted-path condition that broke the marker scan
+# (case 13b). backfill's guard only ever tests its path list for EMPTINESS, so
+# quoting cannot make it fail open the way a per-path `git show` can — this
+# case is what turns that reasoning into evidence.
+BF_CONFLICT="raw/Backfill — Conflicted Source.md"
 printf -- '---\nurl: https://example.invalid/backfill-conflict\n---\n\nBASE raw body\n' \
-  > "$WIKI_PATH/raw/backfill-conflict.md"
+  > "$WIKI_PATH/$BF_CONFLICT"
 git -C "$WIKI_PATH" add -A
 git -C "$WIKI_PATH" commit -q -m "Seed backfill conflict base"
 git -C "$WIKI_PATH" checkout -q -b conflicting-raw
 printf -- '---\nurl: https://example.invalid/backfill-conflict\n---\n\nTHEIR raw body\n' \
-  > "$WIKI_PATH/raw/backfill-conflict.md"
+  > "$WIKI_PATH/$BF_CONFLICT"
 git -C "$WIKI_PATH" commit -qam "their backfill edit"
 git -C "$WIKI_PATH" checkout -q main
 printf -- '---\nurl: https://example.invalid/backfill-conflict\n---\n\nOUR raw body\n' \
-  > "$WIKI_PATH/raw/backfill-conflict.md"
+  > "$WIKI_PATH/$BF_CONFLICT"
 git -C "$WIKI_PATH" commit -qam "our backfill edit"
 
 # Give every summary/ a raw/ so the worklist is empty: this case is about
@@ -398,7 +438,9 @@ git -C "$WIKI_PATH" commit -q -m "Seed raw/ for every summary so the backfill wo
 
 before=$(main_subject)
 git -C "$WIKI_PATH" merge conflicting-raw --no-edit >/dev/null 2>&1
-git -C "$WIKI_PATH" diff --name-only --diff-filter=U | grep -q '^raw/' \
+# quotePath=false here so the fixture check reads the real name, not the
+# C-quoted rendering — this assertion is about the fixture, not the guard.
+git -C "$WIKI_PATH" -c core.quotePath=false diff --name-only --diff-filter=U | grep -q '^raw/' \
   || { echo "FAIL: backfill fixture — no conflicted raw/ path, so the case proves nothing"; fail=1; }
 "$BIN/wiki-ingest-backfill" >/dev/null 2>"$SANDBOX/e15"
 rc15=$?
@@ -413,9 +455,9 @@ grep -q "operation in progress" "$SANDBOX/e15" \
 # path shows up in `git diff --cached --name-only` whether or not anyone staged
 # it, so that check cannot tell guarded from unguarded. Stages 1/2/3 mean the
 # conflict is untouched; a lone stage 0 means `git add raw/` marked it resolved.
-stages=$(git -C "$WIKI_PATH" ls-files -s -- raw/backfill-conflict.md | awk '{print $3}' | sort -u | tr '\n' ' ')
+stages=$(git -C "$WIKI_PATH" ls-files -s -- "$BF_CONFLICT" | awk '{print $3}' | sort -u | tr '\n' ' ')
 [ "$stages" = "1 2 3 " ] \
-  || { echo "FAIL: backfill — raw/backfill-conflict.md index stages are [$stages], expected [1 2 3 ]: the conflict was staged/resolved"; fail=1; }
+  || { echo "FAIL: backfill — $BF_CONFLICT index stages are [$stages], expected [1 2 3 ]: the conflict was staged/resolved"; fail=1; }
 [ "$(main_subject)" = "$before" ] \
   || { echo "FAIL: backfill — main advanced to '$(main_subject)'"; fail=1; }
 [ -e "$(gitdir_of_wiki)/MERGE_HEAD" ] \

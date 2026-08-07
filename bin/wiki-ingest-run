@@ -687,6 +687,11 @@ git -C "$WIKI" add -A 2>/dev/null || true
 # in progress. Anchored on the <<<<<<< / >>>>>>> forms only — a bare "=======" is
 # a legal setext heading underline in markdown and false-positives across a wiki.
 # `while IFS= read -r`, not a for loop: topic filenames contain spaces.
+# core.quotePath=false is load-bearing, not cosmetic: by default git C-quotes any
+# path with a non-ASCII byte, and `git show ":$p"` on that quoted name resolves
+# to nothing, fails, and the failure is swallowed by the 2>/dev/null below — the
+# scan silently cannot fire. The wiki separates title from subtitle with an
+# em-dash (U+2014), so this is ~80 of its 991 topic pages, not an edge case.
 MARKED=""
 while IFS= read -r p; do
   [ -n "$p" ] || continue
@@ -694,7 +699,7 @@ while IFS= read -r p; do
     MARKED="$MARKED$p
 "
   fi
-done < <(git -C "$WIKI" diff --cached --name-only)
+done < <(git -C "$WIKI" -c core.quotePath=false diff --cached --name-only)
 if [ -n "$MARKED" ]; then
   echo "wiki-ingest-run: conflict markers in staged file(s) — refusing to auto-commit: $(printf '%s' "$MARKED" | tr '\n' ' ')" >&2
   # Unstage what the add -A above staged; file contents are untouched. Only
