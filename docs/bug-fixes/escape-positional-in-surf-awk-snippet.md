@@ -54,6 +54,15 @@ gates:
               application:
                 target-stage: implementation
                 state: consumed
+        - id: gate:ypjex7e2gedwvx040yf97pw1:validation
+          stage: validation
+          attempts:
+            - id: gate-attempt:ypjex7e2gedwvx040yf97pw1-validation-1
+              briefing:
+                id: briefing:ypjex7e2gedwvx040yf97pw1:validation:attempt-1:revision-1
+                digest: sha256:fb1e8eafeaff3ec76487c1e2db383c49667ed6430b5783a0f94dd18caa952b6d
+                request-digest: sha256:1dd9ca05566dc73a078a214f20621a89e438816e01dfeb6da265cc3e51e98bfc
+                room-ref: ./escape-positional-in-surf-awk-snippet/review/validation/briefing-1
 ---
 
 ## Problem

@@ -1,0 +1,24 @@
+{
+  "type": "Briefing",
+  "version": "1",
+  "id": "briefing:ypjex7e2gedwvx040yf97pw1:validation:attempt-1:revision-1",
+  "question": "Do the three ACs hold under independent reproduction, and does the fix merge to main?",
+  "artifacts": [
+    {
+      "id": "artifact:ypjex7e2gedwvx040yf97pw1:validation:attempt-1:revision-1:item-1",
+      "uri": "git-root://main/91f82e474e49559c4af69d84e21e297de39b0f42/docs/bug-fixes/_gates/dw2f-validation.md",
+      "rev": "sha256:1b5c4933e07b8bee39bb683029fce0c11d89528c6c27c2a138e31be4ee0f2337",
+      "mediaType": "text/markdown",
+      "summary": "All three ACs reproduced independently by a fresh agent and all pass; every negative case watched going red, including AC-1's reverted copy putting the third URL back inside the awk program. Diff confined to four declared files, bin/ and test-guard.sh untouched, seed byte-identical. New exit 1's blast radius checked: fires only on a genuinely fatal empty TAB_ID, cannot reach the parent agent or sibling ingests. Two Polish findings, both declined under FO authorization. Validator declined to drive real Chrome, stating the reason. Recommend approve and merge."
+    }
+  ],
+  "context": [
+    {
+      "type": "Reference",
+      "id": "reference:ypjex7e2gedwvx040yf97pw1:validation:attempt-1:revision-1:item-2",
+      "uri": "git-root://main/91f82e474e49559c4af69d84e21e297de39b0f42/docs/bug-fixes/escape-positional-in-surf-awk-snippet.md",
+      "mediaType": "text/markdown",
+      "rev": "sha256:efb26b92919f54bccde58c0886fe07c4247d4bdcd9c12ef15e29e470f05ff309"
+    }
+  ]
+}
