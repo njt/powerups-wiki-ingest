@@ -34,6 +34,15 @@ gates:
               application:
                 target-stage: ideation
                 state: consumed
+        - id: gate:ypjex7e2gedwvx040yf97pw1:ideation
+          stage: ideation
+          attempts:
+            - id: gate-attempt:ypjex7e2gedwvx040yf97pw1-ideation-1
+              briefing:
+                id: briefing:ypjex7e2gedwvx040yf97pw1:ideation:attempt-1:revision-1
+                digest: sha256:505f99e78a2654808f0d5216e9cb88b01b2d3fe8ec5ca095c2b125ee91a8a599
+                request-digest: sha256:bc8c08007ba9a92989a1fb0ed216da4e0b84e48e2f869b0ed1e1215f33d8f964
+                room-ref: ./escape-positional-in-surf-awk-snippet/review/ideation/briefing-1
 ---
 
 ## Problem

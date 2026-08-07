@@ -1,0 +1,24 @@
+{
+  "type": "Briefing",
+  "version": "1",
+  "id": "briefing:ypjex7e2gedwvx040yf97pw1:ideation:attempt-1:revision-1",
+  "question": "Is $NF the right fix, is the bail-out change in scope, and is AC-1 an honest proof?",
+  "artifacts": [
+    {
+      "id": "artifact:ypjex7e2gedwvx040yf97pw1:ideation:attempt-1:revision-1:item-1",
+      "uri": "git-root://main/81da1972e433b8c18759478445c1a3f21010e59a/docs/bug-fixes/_gates/dw2f-ideation.md",
+      "rev": "sha256:24afd15be8393adec5f0768b82620c950f3b8f5c71667ae9da36bf0724186a39",
+      "mediaType": "text/markdown",
+      "summary": "Ensign measured Claude Code's expander directly: substitution is 0-based, so $2 is the THIRD argument and the bug needs three or more URLs, not two — a two-URL repro passes on the unfixed file. Corrects both the kata issue and the FO's own backlog summary. Chose $NF over the smaller escape because a literal backslash-$2 read without expansion is an awk syntax error producing the identical empty-TAB_ID failure; NF=2 is structural in surf's YAML, confirmed live. Second defect found: the bail-out comment says bail but the block exits 0, which is why this failed silently — approved in scope per the README's fail-closed-and-loudly rule. AC-1 drives the real claude binary and reads the expansion from the session transcript, refusing an offline harness that would reimplement the expander. AC-2 honestly declared unable to go red on the expansion defect. Recommend approve."
+    }
+  ],
+  "context": [
+    {
+      "type": "Reference",
+      "id": "reference:ypjex7e2gedwvx040yf97pw1:ideation:attempt-1:revision-1:item-2",
+      "uri": "git-root://main/81da1972e433b8c18759478445c1a3f21010e59a/docs/bug-fixes/escape-positional-in-surf-awk-snippet.md",
+      "mediaType": "text/markdown",
+      "rev": "sha256:26cebc0f181972155deb1ea722bbb131f563728957adf5ba5509a802d4046275"
+    }
+  ]
+}
