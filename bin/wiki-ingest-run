@@ -654,8 +654,56 @@ else
   git -C "$WT" commit -m "Ingest: $INGEST_URL" --author="wiki-ingest <noreply@wiki-ingest>"
 fi
 
+# Refuse to auto-commit into a repo that is mid-operation. This MUST run before
+# the `git add -A` below: add -A marks conflicted paths resolved, after which
+# `git ls-files -u` is empty and the evidence is gone, and the commit then
+# concludes someone else's merge with their unresolved tree in it (kata cntt).
+# Exit rather than skip: skipping leaves MERGE_HEAD set, and merge_with_retry's
+# `git merge --abort` would then destroy the captain's hand-resolution.
+# --absolute-git-dir, not --git-dir: the latter returns a RELATIVE path that
+# resolves against this script's cwd, so the test silently never fires.
+GITDIR=$(git -C "$WIKI" rev-parse --absolute-git-dir 2>/dev/null || true)
+INPROGRESS=""
+for st in MERGE_HEAD CHERRY_PICK_HEAD REVERT_HEAD rebase-merge rebase-apply sequencer; do
+  if [ -n "$GITDIR" ] && [ -e "$GITDIR/$st" ]; then INPROGRESS="$INPROGRESS $st"; fi
+done
+if [ -n "$INPROGRESS" ]; then
+  echo "wiki-ingest-run: $WIKI has a git operation in progress ($INPROGRESS) — refusing to auto-commit" >&2
+  echo "wiki-ingest-run: finish or abort it, then re-run. Branch $BRANCH kept for retry." >&2
+  exit 1
+fi
+# --diff-filter=U rather than `ls-files -u`: same detection, one line per path.
+UNMERGED=$(git -C "$WIKI" diff --name-only --diff-filter=U 2>/dev/null || true)
+if [ -n "$UNMERGED" ]; then
+  echo "wiki-ingest-run: $WIKI has unmerged paths — refusing to auto-commit: $(printf '%s' "$UNMERGED" | tr '\n' ' ')" >&2
+  echo "wiki-ingest-run: branch $BRANCH kept for retry." >&2
+  exit 1
+fi
+
 # Commit any local changes on main first (e.g. Obsidian edits) so merge doesn't fail
 git -C "$WIKI" add -A 2>/dev/null || true
+
+# Belt and braces: never commit conflict markers, even with no operation flagged
+# in progress. Anchored on the <<<<<<< / >>>>>>> forms only — a bare "=======" is
+# a legal setext heading underline in markdown and false-positives across a wiki.
+# `while IFS= read -r`, not a for loop: topic filenames contain spaces.
+MARKED=""
+while IFS= read -r p; do
+  [ -n "$p" ] || continue
+  if git -C "$WIKI" show ":$p" 2>/dev/null | grep -qE '^(<<<<<<<|>>>>>>>) '; then
+    MARKED="$MARKED$p
+"
+  fi
+done < <(git -C "$WIKI" diff --cached --name-only)
+if [ -n "$MARKED" ]; then
+  echo "wiki-ingest-run: conflict markers in staged file(s) — refusing to auto-commit: $(printf '%s' "$MARKED" | tr '\n' ' ')" >&2
+  # Unstage what the add -A above staged; file contents are untouched. Only
+  # reachable when no operation is in progress, i.e. nothing was carefully staged.
+  git -C "$WIKI" reset --quiet 2>/dev/null || true
+  echo "wiki-ingest-run: branch $BRANCH kept for retry." >&2
+  exit 1
+fi
+
 git -C "$WIKI" diff --cached --quiet 2>/dev/null || \
   git -C "$WIKI" commit -m "Auto-commit local changes before ingest merge" 2>/dev/null || true
 
