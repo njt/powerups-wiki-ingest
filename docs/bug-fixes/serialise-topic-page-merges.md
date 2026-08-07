@@ -1,9 +1,9 @@
 ---
 id: ghyj7yz18wnypbvkfa84vq0f
 title: Stop concurrent ingests conflicting on shared topic pages (interim mitigation)
-status: backlog
+status: ideation
 source: kata:87sc (interim mitigation only)
-started:
+started: 2026-08-07T14:28:25Z
 completed:
 verdict:
 score: 0.7
@@ -33,7 +33,7 @@ gates:
                 reason: 'Hardest failure evidence in the backlog: 6 of 37 URLs (16%) in one batch, every failure a deterministic content conflict on a topic/ page, which the 5x retry loop structurally cannot fix. Scoped as the Captain''s own named interim measure with the SQLite rearchitecture explicitly out of scope and staying open in 87sc. Sequenced last on purpose so it designs against a settled bin/wiki-ingest-run now that cntt''s guard has merged, avoiding the moving-target error the FO made in the pxf4 brief. Risk flagged forward: keep-both-sides is only obviously correct for additive edits, and six-for-six is a small sample. Captain delegated gate decisions in-conversation.'
               application:
                 target-stage: ideation
-                state: pending
+                state: consumed
 ---
 
 ## Problem
