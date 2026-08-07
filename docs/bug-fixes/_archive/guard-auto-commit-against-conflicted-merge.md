@@ -1,11 +1,11 @@
 ---
 id: 2enq6rq17z4ykkecg15y810w
 title: Guard auto-commit against in-progress and conflicted merges
-status: validation
+status: done
 source: kata:cntt
 started: 2026-08-07T13:23:49Z
-completed:
-verdict:
+completed: 2026-08-07T14:26:04Z
+verdict: PASSED
 score: 0.9
 worktree: .worktrees/spacedock-ensign-guard-auto-commit-against-conflicted-merge
 issue:
@@ -87,7 +87,8 @@ gates:
                 reason: 'Cycle-1 rejection resolved. Reviewer re-measured its own failed census three ways and recorded the correction in the entity; AC-4 re-reproduced and now fires on quoted paths, falsified by deleting only the one token, which returns conflict markers to a commit on main under the incident''s own subject while the ASCII case stays green. AC5 and AC6 re-checked because the diff touched the scan''s input and case 15''s fixture; no over-firing on legitimate em-dash titles. Backfill asymmetry verified statically, mechanically and behaviourally rather than accepted on argument. Scope confirmed line-by-line: one functional line changed, seed byte-identical, both suites green at 17 assertions. One Polish finding declined as disproportionate; one pre-existing out-of-scope hole declined and filed as its own kata issue. Captain delegated gate decisions in-conversation.'
               application:
                 target-stage: done
-                state: pending
+                state: consumed
+archived: 2026-08-07T14:26:05Z
 ---
 
 ## Problem
