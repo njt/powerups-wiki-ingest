@@ -71,6 +71,12 @@ gates:
                 at: "2026-08-07T14:07:06.428741Z"
                 decision: revise
                 reason: 'REJECTS DIRECTION on one Material finding. The marker scan fails open on git-quoted paths; the validator classified it Deferred risk using a census (git ls-files piped to a non-ASCII grep) that core.quotePath has already rendered ASCII by construction, so it could not fail. Measured correctly, git -c core.quotePath=true ls-files | grep -c ''^"'' returns 80 of 2889 tracked paths in the live wiki — 80 of 991 topic pages — because the wiki''s dominant title convention uses an em-dash. All four evidence fields establish supported-workflow harm to value-ac[AC-4]. Authorized disposition: fix, via -c core.quotePath=false plus an em-dash test case watched failing first; check backfill for the same. Findings 2 and 3 Polish, declined. All other ACs verified and stay as built. Captain delegated gate decisions in-conversation.'
+            - id: gate-attempt:2enq6rq17z4ykkecg15y810w-validation-2
+              briefing:
+                id: briefing:2enq6rq17z4ykkecg15y810w:validation:attempt-2:revision-1
+                digest: sha256:75bc62f0344d02a77a58aa07cc104b9eb31d0c3ce9d05932e5afe08e9782ee72
+                request-digest: sha256:77d0e9fea753b51b95ee11a203b70d94b0a7cff222aebcd605feea7835fca652
+                room-ref: ./guard-auto-commit-against-conflicted-merge/review/validation/briefing-2
 ---
 
 ## Problem

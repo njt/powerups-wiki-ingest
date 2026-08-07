@@ -1,0 +1,24 @@
+{
+  "type": "Briefing",
+  "version": "1",
+  "id": "briefing:2enq6rq17z4ykkecg15y810w:validation:attempt-2:revision-1",
+  "question": "Does AC-4 now hold for quoted paths, and does the fix merge?",
+  "artifacts": [
+    {
+      "id": "artifact:2enq6rq17z4ykkecg15y810w:validation:attempt-2:revision-1:item-1",
+      "uri": "git-root://main/c93e6fb6a8f53f7cda2fd6d8db8cfe84bedc57c8/docs/bug-fixes/_gates/cntt-validation-cycle2.md",
+      "rev": "sha256:3f70a1a98a698c8afee7be2b4274226eb5961de17c64e2d5810366731b9cbdcf",
+      "mediaType": "text/markdown",
+      "summary": "Rejected finding closed. Reviewer re-measured its own census three ways and published the contradiction: the check that could not fail reads 0, correct measurement reads 80 of 2889, all topic pages, all em-dash convention. AC-4 re-reproduced; falsified by deleting only the one token, which puts conflict markers back on main under the incident's own commit subject while the ASCII case stays green. AC5 and AC6 re-checked because the diff touched the scan's input and case 15's fixture. Backfill asymmetry verified statically, mechanically and behaviourally rather than accepted. One Polish finding declined; one pre-existing out-of-scope hole declined and filed separately. Recommend approve and merge."
+    }
+  ],
+  "context": [
+    {
+      "type": "Reference",
+      "id": "reference:2enq6rq17z4ykkecg15y810w:validation:attempt-2:revision-1:item-2",
+      "uri": "git-root://main/c93e6fb6a8f53f7cda2fd6d8db8cfe84bedc57c8/docs/bug-fixes/guard-auto-commit-against-conflicted-merge.md",
+      "mediaType": "text/markdown",
+      "rev": "sha256:6fe8a151ff007dc775cb19d9d741f41323e65332f3a5963458f3c0c34af66a69"
+    }
+  ]
+}
