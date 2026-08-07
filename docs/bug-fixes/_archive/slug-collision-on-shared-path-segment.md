@@ -1,11 +1,11 @@
 ---
 id: jcpfnk0aasbcqxz52ej6cvk1
 title: Slug collision silently overwrites another source's raw, summary and topic files
-status: validation
+status: done
 source: kata:pxf4
 started: 2026-08-07T14:00:53Z
-completed:
-verdict:
+completed: 2026-08-07T15:16:18Z
+verdict: PASSED
 score: 0.6
 worktree: .worktrees/spacedock-ensign-slug-collision-on-shared-path-segment
 issue:
@@ -87,7 +87,8 @@ gates:
                 reason: 'Cycle-1 rejection resolved and verified first-hand: changing bin/wiki-ingest-run:97 alone leaves the suite 27/27 across five token schemes including the AC6 candidate, where cycle 1 produced four failures across two cases. The vacuity risk was dispatched explicitly and did not materialise — suffix behaviour broken three ways with case A itself going red each time, and the learned-token plumbing shown to fail loudly rather than skip silently. Scope caveat verified in both directions with path-varying schemes failing red. bin/ byte-identical to cycle 1 by three independent measures, so AC1-AC5 carry forward soundly; the duplicate-generator guard was re-run against the reworked suite rather than carried, and still fires. No new findings. AC6 remains unsatisfied and reserved to the Captain, now genuinely a one-line change. Captain delegated gate decisions in-conversation.'
               application:
                 target-stage: done
-                state: pending
+                state: consumed
+archived: 2026-08-07T15:16:18Z
 ---
 
 ## Problem
