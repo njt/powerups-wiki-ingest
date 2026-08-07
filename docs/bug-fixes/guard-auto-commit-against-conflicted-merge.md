@@ -23,6 +23,17 @@ gates:
                 digest: sha256:1c2a3ba0e6936a089bbb993999ed525fa9920b50510ade66d69010edee5dff9d
                 request-digest: sha256:2a09fef14571d7de822022b41076ccd630ca86f965daee4ab9833d5b0655be01
                 room-ref: ./guard-auto-commit-against-conflicted-merge/review/backlog/briefing-1
+              resolution:
+                type: Resolution
+                id: resolution:spacedock:2enq6rq17z4ykkecg15y810w:backlog:1
+                briefing: briefing:2enq6rq17z4ykkecg15y810w:backlog:attempt-1:revision-1
+                by: agent:first-officer
+                at: "2026-08-07T13:21:38.148442Z"
+                decision: approve
+                reason: First-hand 2026-08-06 evidence names the corrupted file, the mechanism and the commit; only backlog item that has damaged committed data on main. Scope is a bounded guard on an existing step. Captain delegated ordering and gate decisions in-conversation.
+              application:
+                target-stage: ideation
+                state: pending
 ---
 
 ## Problem

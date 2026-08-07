@@ -23,6 +23,17 @@ gates:
                 digest: sha256:722a3c30af687b70b6f64191575cbd2f20955d7a7688c97b0030c9435cfb6b53
                 request-digest: sha256:1f56e391f7d382fe31b4d452a5eb67b2773684014ebebbfdbda05c16b21df46f
                 room-ref: ./escape-positional-in-surf-awk-snippet/review/backlog/briefing-1
+              resolution:
+                type: Resolution
+                id: resolution:spacedock:ypjex7e2gedwvx040yf97pw1:backlog:1
+                briefing: briefing:ypjex7e2gedwvx040yf97pw1:backlog:attempt-1:revision-1
+                by: agent:first-officer
+                at: "2026-08-07T13:21:48.240849Z"
+                decision: approve
+                reason: 2026-08-07 observation captures the exact corrupted awk expansion; defect is real and silently disables the surf fallback for multi-URL batches. Smallest diff, zero file overlap with the concurrent guard fix. Captain delegated gate decisions in-conversation.
+              application:
+                target-stage: ideation
+                state: pending
 ---
 
 ## Problem
