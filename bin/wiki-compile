@@ -155,8 +155,9 @@ about it. Sharp and falsifiable, not a topic sentence.
 
 ## The Argument
 
-The substance, organised by IDEA rather than by source. Cite sources inline as
-[[wikilinks]] using their existing page titles. Compare and contrast.
+The substance, organised by IDEA rather than by source. Cite other pages
+inline in double-bracket link syntax, using each page's EXACT existing title --
+never an abbreviation of it. Compare and contrast.
 
 ## Where the Sources Disagree
 
@@ -169,7 +170,7 @@ Gaps the evidence does not cover — the honest edges of what you can claim.
 
 ## Also on This Theme
 
-EVERY [[wikilink]] that appeared in the current version of this page and which
+EVERY double-bracket link that appeared in the current version of this page and which
 you have NOT woven into the sections above, as a bullet list with a few words
 each on what it covers. Omit this section only if there are none left over.
 
@@ -179,16 +180,18 @@ each on what it covers. Omit this section only if there are none left over.
 *Last compiled: $TODAY*
 
 RULES.
-- PRESERVE EVERY EXISTING [[wikilink]]. This page is not only an argument, it is
+- PRESERVE EVERY EXISTING LINK. This page is not only an argument, it is
   also a directory: for many pages it is their only inbound link, and dropping
   one strands it where nothing in the wiki points at it any more. Every wikilink
-  in the current version MUST appear in your output — woven into the argument
+  in the current version MUST appear in your output, spelled EXACTLY as before —
+  woven into the argument
   where it belongs, or listed under "Also on This Theme". This is checked
   mechanically and the compile is REJECTED if any link disappears. You may add
   links; you may not remove them.
 - Ground every claim in the digests. If it is not in the evidence, do not assert it.
-- Do NOT invent [[wikilinks]] to pages you have not seen named in the context or
-  the current page. Dead links are a real and measured problem in this wiki.
+- Do NOT invent links to pages you have not seen named in the context or the
+  current page, and never shorten a title into a new link. Both are checked
+  mechanically and REJECT the compile. Dead links are a measured problem here.
 - Do not write a page count or corpus statistic; those go stale and there is no
   reliable number available to you.
 - Write for a smart reader who has not read the sources. British-neutral prose,
@@ -231,12 +234,29 @@ old=subprocess.run(["git","-C",wt,"show",f"HEAD:{rel}"],
                    capture_output=True,text=True).stdout
 new=open(os.path.join(wt,rel),encoding="utf-8",errors="replace").read()
 lost=sorted(links(old)-links(new))
-# Emit the count itself; counting separators in the shell was off by one.
-print(f"{len(lost)}\t" + "; ".join(lost[:6]) + (" ..." if len(lost)>6 else "")
-      if lost else "")
+# A TRUNCATED link is judged too, but nothing else that is merely absent: a
+# model shortened [[bb — The Agent Orchestrator as Normalizer]] to [[bb]],
+# which reads as one link kept plus one added, so the drop check cannot see it.
+# Only prefixes of a real page title count. A new link to a page that simply
+# does not exist is left alone on purpose -- that is a WANTED page, the corpus
+# naming a theme it lacks, and rejecting those would fight the design.
+# NB: this program sits inside a single-quoted shell string, so it must contain
+# no single quotes at all -- not even inside a nested join.
+titles=set()
+for d,_,fs in os.walk(wt):
+    if ".git" in d.split(os.sep): continue
+    titles.update(f[:-3] for f in fs if f.endswith(".md"))
+added=links(new)-links(old)
+trunc=sorted(a for a in added
+             if a not in titles and any(t != a and t.startswith(a) for t in titles))
+parts=[]
+if lost:  parts.append("dropped "+str(len(lost))+" cross-link(s): "+", ".join(lost[:4]))
+if trunc: parts.append("truncated "+str(len(trunc))+" link(s): "+", ".join(trunc[:4]))
+msg="; ".join(parts)
+print(str(len(lost)+len(trunc))+"\t"+msg if msg else "")
 ')
   if [ -n "$LOST" ]; then
-    FAIL="dropped ${LOST%%	*} cross-link(s): ${LOST#*	}"
+    FAIL="${LOST#*	}"
   fi
 fi
 # The compiler must not have touched anything else.
