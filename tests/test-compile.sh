@@ -12,12 +12,19 @@
 # on main with the pre-compile page still on disk. Case 2 asserts that directly,
 # and every other case re-checks it in passing via assert_live_checkout_pristine.
 #
-# KNOWN BUGS. Cases marked `known_bug` assert the behaviour wiki-compile is
-# SUPPOSED to have and are currently failing. They print loudly but do not turn
-# the suite red, so the suite still has a green baseline to mutation-test
-# against. When one is fixed, the case reports "KNOWN BUG APPEARS FIXED" and
-# should be promoted to a hard `check`. See the comment on each for the
-# evidence. Do not delete a known_bug case to make the output quieter.
+# REGRESSION GUARDS. Four bugs this file was written to expose have since been
+# fixed in bin/, and the cases that caught them are now ordinary hard checks —
+# the suite goes red if any of them comes back:
+#   * a compile onto a branch that is checked out in ANOTHER worktree succeeds,
+#     and the branch ref advances (git update-ref, not `git branch -f`);
+#   * a model that writes nothing exits 6 instead of reporting success, while a
+#     GENUINE no-op still exits 0 — both directions are asserted, and they are
+#     only distinguishable because the page's mtime is back-dated first;
+#   * the dropped-cross-link count is exact, not one short;
+#   * an all-blank --themes-file exits 3 with "nothing to compile" instead of
+#     dying silently under `set -e`.
+# Each case below carries the evidence of the original failure, because that is
+# what says which detail of the assertion is load-bearing.
 #
 # Targets bash 3.2 (macOS /bin/bash): no mapfile, no associative arrays, no
 # negative indexing.
@@ -27,7 +34,6 @@ set -u
 DIR="$(cd "$(dirname "$0")" && pwd)"
 BIN="$DIR/../bin"
 fail=0
-known=0
 
 SANDBOX=$(mktemp -d "${TMPDIR:-/tmp}/wiki-compile-test.XXXXXX")
 # NEVER a real wiki. Everything below writes into this temp dir only.
@@ -181,8 +187,8 @@ done
 
 # Every theme page is REALISTIC: over the 250-word floor and already carrying a
 # provenance footer. That matters — the validation gate can only be shown to
-# work on a page that would otherwise pass, and the "LLM wrote nothing" hole
-# (known bug B) is invisible against a stub fixture page.
+# work on a page that would otherwise pass, and the "LLM wrote nothing" case
+# (gate/silent) is invisible against a stub fixture page.
 seed_theme() {  # seed_theme <title> <src-a> <src-b>
   { printf '# %s\n\nThe pre-compile version of this page.\n\n' "$1"
     # Cross-links to other topic pages. A theme page is also a directory, and
@@ -228,17 +234,6 @@ check() {  # check <label> <expected-rc> <actual-rc>
 
 assert() {  # assert <label> <condition-already-evaluated:0|1>
   if [ "$2" = 0 ]; then echo "ok: $1"; else echo "FAIL: $1"; fail=1; fi
-}
-
-# A currently-failing assertion of the behaviour wiki-compile is supposed to
-# have. Loud, counted, but not fatal — see the KNOWN BUGS note at the top.
-known_bug() {  # known_bug <label> <condition-already-evaluated:0|1>
-  if [ "$2" = 0 ]; then
-    echo "!! KNOWN BUG APPEARS FIXED — promote to a hard check: $1"
-  else
-    echo "known-bug (expected fail): $1"
-  fi
-  known=$((known + 1))
 }
 
 branch_exists() { git -C "$W" rev-parse --verify --quiet "refs/heads/$1" >/dev/null 2>&1; }
@@ -365,17 +360,18 @@ grep -q 'already used by worktree' "$SANDBOX/all.held" \
   || { echo "FAIL: held-branch — the compiler never ran; the worktree could not be created"; fail=1; }
 echo "ok: held-branch: the throwaway worktree is created and the compiler runs"
 
-# 3b — KNOWN BUG A. The compile still does not SUCCEED. `git branch -f` refuses
-# to move a branch that is checked out in another worktree, so wiki-compile
-# builds the commit, then exits 5 with "could not move curate/happy" and leaves
-# the branch where it was. Observed 2026-08-09 against bin/wiki-compile:216.
-# End result for a batch run is the same as the bug it replaced: every theme
-# fails and the branch never advances. `git update-ref refs/heads/$BRANCH` has
-# no such restriction and would move it.
-known_bug "held-branch: a compile onto a branch held elsewhere succeeds (rc=0)" \
-  "$([ "$RC" = 0 ]; echo $?)"
-known_bug "held-branch: the branch ref advances even though it is checked out elsewhere" \
+# 3b — the second half of the same regression, and the reason the detached build
+# alone was not enough. `git branch -f` REFUSES to move a branch that is checked
+# out in another worktree, so wiki-compile used to build the commit and then exit
+# 5 with "could not move curate/happy", leaving the branch where it was: for a
+# batch run that is the same outcome as the bug the detach was meant to cure —
+# every theme fails and the branch never advances. It now moves the ref with
+# `git update-ref refs/heads/$BRANCH`, which has no such restriction
+# (bin/wiki-compile:277).
+check "held-branch: a compile onto a branch held elsewhere succeeds" 0 "$RC"
+assert "held-branch: the branch ref advances even though it is checked out elsewhere" \
   "$([ "$(branch_tip curate/happy)" != "$held_tip" ]; echo $?)"
+# Should it ever fail again, say whether it at least failed the documented way.
 if [ "$RC" != 0 ]; then
   grep -q 'could not move curate/happy' "$SANDBOX/all.held" \
     || { echo "FAIL: held-branch — failed, but not with the documented recovery message: $(cat "$SANDBOX/all.held")"; fail=1; }
@@ -429,14 +425,15 @@ grep -q 'Untouched Page' "$SANDBOX/all.droplink" \
   && { echo "FAIL: gate/droplink — a link that was KEPT is reported as dropped"; fail=1; }
 gate_case droplinks drop-both-links 'cross-link(s)'
 
-# KNOWN BUG D — the dropped-link COUNT is one short.
-# `printf '%s' "$LOST" | tr ';' '\n' | wc -l` counts newlines in a string that
-# printf deliberately leaves unterminated, so N dropped links are reported as
-# N-1: one dropped link reads "dropped 0 cross-link(s)". The names are right;
-# only the number is wrong. bin/wiki-compile:223, observed 2026-08-09.
-known_bug "gate/droplink: one dropped link is reported as 'dropped 1'" \
+# The dropped-link COUNT must be exact, not merely non-zero. It used to be one
+# short: `printf '%s' "$LOST" | tr ';' '\n' | wc -l` counted newlines in a string
+# printf deliberately leaves unterminated, so N dropped links were reported as
+# N-1 and a single dropped link read "dropped 0 cross-link(s)" — the names right,
+# the number wrong, which is the shape of report a reader dismisses. The count is
+# now emitted by the python helper that computes it (bin/wiki-compile:235).
+assert "gate/droplink: one dropped link is reported as 'dropped 1'" \
   "$(grep -q 'dropped 1 cross-link' "$SANDBOX/all.droplink"; echo $?)"
-known_bug "gate/droplinks: two dropped links are reported as 'dropped 2'" \
+assert "gate/droplinks: two dropped links are reported as 'dropped 2'" \
   "$(grep -q 'dropped 2 cross-link' "$SANDBOX/all.droplinks"; echo $?)"
 
 # The gate's negative half: links that MOVED — realiased, anchored, resited in
@@ -447,17 +444,24 @@ STUB_MODE=alias-links run_compile alias --theme "Test Theme" --branch curate/ali
 check "gate/alias: realiased and anchored links are not 'dropped'" 0 "$RC"
 assert_live_checkout_pristine "gate/alias"
 
-# KNOWN BUG B — "the LLM wrote nothing" is reported as SUCCESS.
+# A compiler that writes NOTHING must be reported as a failure, not as success.
 #
 # The `[ -f "$WT/$PAGE_REL" ]` check cannot fire in the situation it is named
 # for: the throwaway worktree is checked out from BASE, so the theme page is
 # already on disk before the compiler is invoked. A compiler that writes nothing
 # therefore leaves a valid, long, provenance-carrying page, passes every gate,
-# stages an empty diff, and wiki-compile prints "no change (already current)"
-# and exits 0. A batch run of a silently broken model reports 30/30 compiled.
-# Observed 2026-08-09 against bin/wiki-compile:180. Nothing is committed, so
-# this is not a corruption bug — it is a reporting bug, and it makes a dead
-# model indistinguishable from a genuine no-op (case 6).
+# stages an empty diff — and wiki-compile used to print "no change (already
+# current)" and exit 0, so a batch run of a silently broken model reported 30/30
+# compiled. Nothing is committed either way, so this was never a corruption bug;
+# what it cost was the ability to tell a dead model from a genuine no-op.
+#
+# Content cannot make that distinction, and mtime resolution here is whole
+# seconds, so the checkout and a legitimate rewrite can land in the same one.
+# wiki-compile therefore back-dates the page to 2000-01-01 before invoking the
+# model: any write at all moves the mtime to now, so "file untouched" is
+# unambiguous, and the untouched case exits 6 (bin/wiki-compile:120,257).
+# The other direction — a genuine no-op still exiting 0 — is case 6 below, and
+# both halves have to hold or the check is worthless.
 rm -f "$STUB_WROTE"
 STUB_MODE=nothing run_compile silent --theme "Test Theme" --branch curate/gate-silent
 if branch_exists curate/gate-silent; then
@@ -465,8 +469,9 @@ if branch_exists curate/gate-silent; then
 else
   echo "ok: gate/silent: a compiler that writes nothing commits nothing"
 fi
-known_bug "gate/silent: a compiler that writes nothing exits non-zero" \
-  "$([ "$RC" != 0 ]; echo $?)"
+check "gate/silent: a compiler that writes nothing exits 6" 6 "$RC"
+assert "gate/silent: it says the model never wrote the page" \
+  "$(grep -q 'the model never wrote topic/Test Theme.md (file untouched)' "$SANDBOX/all.silent"; echo $?)"
 assert_live_checkout_pristine "gate/silent"
 
 # =============================================================================
@@ -500,7 +505,10 @@ assert_live_checkout_pristine "dry-run"
 
 # =============================================================================
 # Case 6 — no-op. A byte-identical recompile reports no change and creates no
-# empty commit.
+# empty commit. This is the other half of gate/silent above: the model DID write,
+# it just wrote what was already there, and that must still exit 0. An
+# untouched-file check that fires here would be indistinguishable from one that
+# never fires at all.
 # =============================================================================
 STUB_REV=7 run_compile noop1 --theme "Other Theme" --branch curate/noop
 check "no-op: the first compile commits" 0 "$RC"
@@ -599,22 +607,21 @@ grep -q 'Lonely Theme' "$STUB_LOG" \
   || { echo "FAIL: recompile-top — nothing was compiled at all"; fail=1; }
 assert_live_checkout_pristine "recompile-top"
 
-# KNOWN BUG C — an empty (or all-blank) --themes-file dies silently.
-# `grep -v '^[[:space:]]*$' file > LIST` exits 1 when it matches nothing, and
-# under `set -euo pipefail` that kills wiki-recompile before the "nothing to
-# compile" branch at bin/wiki-recompile:52 is ever reached: rc=1, no message.
-# Observed 2026-08-09.
-: > "$SANDBOX/blank.txt"
+# An empty (or all-blank) --themes-file must be refused, and must SAY so. It used
+# to die silently: `grep -v '^[[:space:]]*$' file > LIST` exits 1 when it matches
+# nothing, and under `set -euo pipefail` that killed wiki-recompile before the
+# "nothing to compile" branch could be reached — rc=1 and not a word of output,
+# which in an unattended run is indistinguishable from a crash. The grep now
+# carries `|| true` (bin/wiki-recompile:44), so the empty list reaches the check
+# that explains it.
 printf '\n\n' > "$SANDBOX/blank.txt"
 "$BIN/wiki-recompile" --themes-file "$SANDBOX/blank.txt" --branch curate/blank \
   >"$SANDBOX/out.blank" 2>&1
 RC=$?
-known_bug "recompile: an all-blank themes-file exits 3 with 'nothing to compile'" \
-  "$([ "$RC" = 3 ] && grep -q 'nothing to compile' "$SANDBOX/out.blank"; echo $?)"
-[ "$RC" != 0 ] \
-  || { echo "FAIL: recompile-blank — an empty theme list exited 0"; fail=1; }
+check "recompile-blank: an all-blank themes-file is refused" 3 "$RC"
+assert "recompile-blank: it says why" \
+  "$(grep -q 'nothing to compile' "$SANDBOX/out.blank"; echo $?)"
 
 echo ""
-[ "$known" = 0 ] || echo "test-compile: $known known-bug assertion(s) still failing — see the KNOWN BUGS note at the top of this file"
 [ "$fail" = 0 ] && echo "test-compile: ALL PASS"
 exit $fail
