@@ -38,6 +38,15 @@ SELF_COUNT = re.compile(
 FRONTMATTER_KEY = re.compile(r"^([A-Za-z_][A-Za-z0-9_-]*):\s*(.*)$")
 
 WIKI_DIRS = ("topic", "summary", "raw")
+# Bare [[Name]] can match several files. Prefer the authored page over the
+# digest, and the digest over the verbatim archive -- alphabetical order gets
+# this exactly backwards ("raw" < "summary" < "topic").
+KIND_RANK = {"topic": 0, "summary": 1, "raw": 2}
+
+
+def _rank(key):
+    top = key.split("/", 1)[0] if "/" in key else ""
+    return (KIND_RANK.get(top, 3), key)
 
 
 def die(msg, code=2):
@@ -147,7 +156,7 @@ class Vault:
         """Resolve a wikilink target to a vault key, or None."""
         if target in self.by_basename:
             hits = self.by_basename[target]
-            return hits[0] if len(hits) == 1 else sorted(hits)[0]
+            return hits[0] if len(hits) == 1 else min(hits, key=_rank)
         # path-qualified: [[summary/hunk-dev]]
         norm = target.lstrip("./")
         for key in (norm, norm + ".md"):
@@ -156,7 +165,7 @@ class Vault:
                 return k
         base = os.path.basename(norm)
         if base in self.by_basename:
-            return sorted(self.by_basename[base])[0]
+            return min(self.by_basename[base], key=_rank)
         return None
 
     def _link(self):
@@ -171,8 +180,21 @@ class Vault:
             p["dead_links"] = dead
             for r in resolved:
                 self.inbound[r].add(key)
-            # Declared provenance: links into summary/
-            p["sources"] = sorted({r for r in resolved if r.startswith("summary/")})
+            # Declared provenance. The corpus cites its sources two ways --
+            # *Sources: [[summary/SLUG]]* and *Sources: [[raw/SLUG]]* -- and
+            # both mean "this page was built from that source". An archive
+            # citation is credited to its digest; if the digest is missing, the
+            # citation is dangling and the page cannot be recompiled from it.
+            srcs, dangling = set(), []
+            for r in set(resolved):
+                if r.startswith("summary/"):
+                    srcs.add(r)
+                elif r.startswith("raw/"):
+                    digest = "summary/" + r.split("/", 1)[1]
+                    (srcs.add(digest) if digest in self.pages
+                     else dangling.append(r))
+            p["sources"] = sorted(srcs)
+            p["dangling"] = sorted(dangling)
 
         # Reconstructed provenance for pages that declare none. A hub's sources
         # are the union of the digests of the pages it links to -- verified on
@@ -244,12 +266,14 @@ def check_single_source(v):
 
 
 def check_dangling_sources(v):
+    """Archive citations with no digest -- the page cannot be recompiled."""
     items = []
     for p in sorted(v.topics(), key=lambda x: x["key"]):
-        for s in p["sources"]:
-            if s not in v.pages:
-                items.append({"page": p["path"], "missing": s})
-    return ("dangling-provenance", "Cited digests that do not exist", items)
+        for s in p.get("dangling", []):
+            items.append({"page": p["path"], "archive": s,
+                          "missing": "summary/" + s.split("/", 1)[1]})
+    return ("dangling-provenance",
+            "Pages citing an archive whose digest is missing", items)
 
 
 def check_orphan_digests(v):
@@ -278,6 +302,10 @@ def check_stale_counts(v):
     actual = len(v.topics())
     items = []
     for p in sorted(v.pages.values(), key=lambda x: x["key"]):
+        # raw/ is verbatim third-party text; someone else's "my wiki has 500
+        # pages" is not a claim this wiki is making.
+        if not p["authored"]:
+            continue
         for m in SELF_COUNT.finditer(p["body"]):
             claimed = int(m.group(1).replace(",", ""))
             # Only flag a real drift; "~1000" against 1017 is honest enough.

@@ -23,12 +23,23 @@ Measured, not asserted.
 
 | population | count | what it really is |
 |---|---:|---|
-| topic pages citing exactly one source | 709 | a digest with opinions bolted on |
-| topic pages citing two or more sources | **9** | genuine synthesis |
-| topic pages citing no source at all | 299 | accretion hubs — un-auditable, un-rebuildable |
+| topic pages citing exactly one source | **922** | a digest with opinions bolted on |
+| topic pages citing two or more sources | **21** | genuine synthesis |
+| topic pages whose sources had to be reconstructed | 69 | accretion hubs |
+| topic pages with no recoverable provenance | 5 | un-auditable, un-rebuildable |
 | **total** | **1,017** | |
 
-The 299 provenance-less hubs are the ones with names like `Software Engineering Craft` (2,952 words), `Agent Coding Workflow` (3,169), `Databases and Data`, `Agent Memory and Context`, `Guardrails and Feedback Loops`, `Agent Orchestration`. They are the only real *topics* in the wiki, and they are the exact pages that collide on every concurrent batch: seven merge failures across eleven conflicted files in the 2026-08-08 run, eleven genuine content conflicts since 2026-08-05.
+**91% of the wiki's topic pages are built from exactly one source.** They are
+not topics; they are digests with opinions bolted on. Only 21 pages in a
+thousand-page wiki do the thing the tier exists to do.
+
+The reconstructed hubs are the ones with names like `Software Engineering Craft`
+(2,952 words), `Agent Coding Workflow` (3,169), `Databases and Data`,
+`Agent Memory and Context`, `Guardrails and Feedback Loops`,
+`Agent Orchestration`. They are the only real *topics* in the wiki, and they are
+the exact pages that collide on every concurrent batch: seven merge failures
+across eleven conflicted files in the 2026-08-08 run, eleven genuine content
+conflicts since 2026-08-05.
 
 That correlation is not a coincidence; it is the diagnosis. The hubs are the only pages that many sources legitimately want to touch, and the architecture gives them a mutation interface instead of a compilation step.
 

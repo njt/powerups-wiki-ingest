@@ -676,13 +676,18 @@ On CONTENT, produce:
    opinionated critical analysis, [[wikilinks]] to related pages, source footer
    linking [[raw/$SLUG]] and [[summary/$SLUG]]. Read index.md for cross-link
    targets and grep existing topic pages for related keywords.
-3. SYNTHESIS — integrate this source into the existing wiki, don't just file a
-   new page. Pick the 2–4 MOST-related existing topic/ pages (use index.md and
-   grep). For each, make a MINIMAL, ADDITIVE edit: weave in the new finding in a
-   sentence or two plus a [[<new Title>]] backlink, where it strengthens,
-   nuances, or complicates that page. Do NOT rewrite, restructure, reorder, or
-   delete existing content — only add. If no existing page is genuinely related,
-   skip this step (a near-empty wiki is fine).
+3. RELATE — connect this source to the wiki from YOUR OWN page. Find the 2–4
+   MOST-related existing topic/ pages (use index.md and grep) and link to each
+   with a [[wikilink]] from the page you just wrote, in a sentence that says how
+   this source strengthens, nuances, or complicates that page.
+
+   Do NOT edit any existing topic/ page. Not even additively. Cross-page
+   curation is a SEPARATE COMPILE STEP (wiki-recompile), which rebuilds a theme
+   page from ALL of its sources at once and can therefore revise stale claims
+   instead of only appending to them. Editing shared pages from inside a
+   per-source ingest is what produced this wiki's merge conflicts and its
+   un-revisable hub pages; the link you write above carries the same
+   information, and Obsidian derives the backlink for free.
 4. Update index.md — add the topic page under the most appropriate section.
 5. Append to log.md — exactly ONE bullet line, EXACTLY this format:
    - $INGEST_DATE: Ingested [Title]($INGEST_URL) (author, site, publication-date) — 1–3 sentence summary. → raw/$SLUG.md, [[Page Title]]. Cross-links: [[A]], [[B]].

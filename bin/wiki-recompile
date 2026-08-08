@@ -78,7 +78,7 @@ ELAPSED=$(( $(date +%s) - START ))
 echo ""
 echo "wiki-recompile: auditing after..."
 WT="$(mktemp -d "${TMPDIR:-/tmp}/wiki-recompile-audit-XXXXXX")"
-if git -C "$WIKI_PATH" worktree add --quiet "$WT" "$BRANCH" 2>/dev/null; then
+if git -C "$WIKI_PATH" worktree add --quiet --detach "$WT" "$BRANCH" 2>/dev/null; then
   "$CURATE" --wiki "$WT" audit --json > "$LIST.after" 2>/dev/null || true
   git -C "$WIKI_PATH" worktree remove --force "$WT" 2>/dev/null || rm -rf "$WT"
 else

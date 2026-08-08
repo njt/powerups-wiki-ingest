@@ -67,11 +67,13 @@ cleanup() {
 }
 trap cleanup EXIT
 
-if git -C "$WIKI_PATH" show-ref --verify --quiet "refs/heads/$BRANCH"; then
-  git -C "$WIKI_PATH" worktree add --quiet "$WT" "$BRANCH"
-else
-  git -C "$WIKI_PATH" worktree add --quiet -b "$BRANCH" "$WT" main
-fi
+# DETACHED on purpose. Checking the branch out here would make the compile fail
+# for anything else holding it -- an audit worktree, a second compile, Nat's own
+# checkout -- with a "already used by worktree" fatal. We build detached and
+# move the branch ref afterwards, so the branch is never checked out anywhere.
+BASE=$(git -C "$WIKI_PATH" rev-parse --verify --quiet "refs/heads/$BRANCH" \
+       || git -C "$WIKI_PATH" rev-parse --verify main)
+git -C "$WIKI_PATH" worktree add --quiet --detach "$WT" "$BASE"
 
 # --- Assemble the context: every digest, in one file the model must read -----
 # Concatenating rather than handing over a list of paths is deliberate: it
@@ -208,6 +210,15 @@ Rebuilt as a derived artifact rather than appended to, so stale claims and
 duplicated passages could be revised. Provenance: $PROV.
 
 Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
+
+# Advance the branch to the commit we just built detached.
+NEWREF=$(git -C "$WT" rev-parse HEAD)
+if ! git -C "$WIKI_PATH" branch -f "$BRANCH" "$NEWREF" 2>/dev/null; then
+  echo "wiki-compile: could not move $BRANCH (checked out somewhere?)" >&2
+  echo "wiki-compile: the commit exists at $NEWREF — recover with:" >&2
+  echo "  git -C \"\$WIKI_PATH\" branch -f $BRANCH $NEWREF" >&2
+  exit 5
+fi
 NEW=$(wc -w < "$WT/$PAGE_REL" | tr -d ' ')
 echo "wiki-compile: COMPILED $PAGE_REL ($NEW words) on branch $BRANCH"
 echo "wiki-compile: review with  git -C \"\$WIKI_PATH\" diff main..$BRANCH"
