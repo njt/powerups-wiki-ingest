@@ -154,12 +154,25 @@ inventing one.
 
 Gaps the evidence does not cover — the honest edges of what you can claim.
 
+## Also on This Theme
+
+EVERY [[wikilink]] that appeared in the current version of this page and which
+you have NOT woven into the sections above, as a bullet list with a few words
+each on what it covers. Omit this section only if there are none left over.
+
 ---
 
 *Compiled from $N_SRC sources: <list every digest as [[summary/slug]], comma-separated>*
 *Last compiled: $TODAY*
 
 RULES.
+- PRESERVE EVERY EXISTING [[wikilink]]. This page is not only an argument, it is
+  also a directory: for many pages it is their only inbound link, and dropping
+  one strands it where nothing in the wiki points at it any more. Every wikilink
+  in the current version MUST appear in your output — woven into the argument
+  where it belongs, or listed under "Also on This Theme". This is checked
+  mechanically and the compile is REJECTED if any link disappears. You may add
+  links; you may not remove them.
 - Ground every claim in the digests. If it is not in the evidence, do not assert it.
 - Do NOT invent [[wikilinks]] to pages you have not seen named in the context or
   the current page. Dead links are a real and measured problem in this wiki.
@@ -187,6 +200,27 @@ if [ -z "$FAIL" ] && grep -qE '^(<<<<<<<|>>>>>>>) ' "$WT/$PAGE_REL"; then
 fi
 if [ -z "$FAIL" ] && ! grep -q 'Compiled from' "$WT/$PAGE_REL"; then
   FAIL="no provenance footer"
+fi
+# Connectivity is not negotiable. A hub page is often the ONLY inbound link a
+# page has; dropping links strands them. Measured: an early run cut 48 of 104
+# links from one hub and pushed wiki-wide orphans from 106 to 114.
+if [ -z "$FAIL" ]; then
+  LOST=$(WT="$WT" PAGE_REL="$PAGE_REL" WIKI_PATH="$WIKI_PATH" python3 -c '
+import os,re,subprocess
+LINK=re.compile(r"\[\[([^\]\[]+?)\]\]")
+FENCE=re.compile(r"^```.*?^```",re.M|re.S); INLINE=re.compile(r"`[^`\n]*`")
+def links(t):
+    t=INLINE.sub("",FENCE.sub("",t))
+    return {x.split("|")[0].split("#")[0].strip() for x in LINK.findall(t)
+            if not x.startswith(("summary/","raw/"))}
+wt,rel=os.environ["WT"],os.environ["PAGE_REL"]
+old=subprocess.run(["git","-C",wt,"show",f"HEAD:{rel}"],
+                   capture_output=True,text=True).stdout
+new=open(os.path.join(wt,rel),encoding="utf-8",errors="replace").read()
+lost=sorted(links(old)-links(new))
+print("; ".join(lost[:6]) + (" ..." if len(lost)>6 else "") if lost else "")
+')
+  [ -z "$LOST" ] || FAIL="dropped $(printf '%s' "$LOST" | tr ';' '\n' | wc -l | tr -d ' ') cross-link(s): $LOST"
 fi
 # The compiler must not have touched anything else.
 OTHER=$(git -C "$WT" status --porcelain -- . ':!'"$PAGE_REL" | head -5)

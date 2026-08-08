@@ -1,0 +1,150 @@
+#!/usr/bin/env python3
+"""wiki-review — make a compile branch reviewable at a glance.
+
+`git diff main..curate/compile-*` is dozens of wholly-rewritten pages, which is
+unreadable as a review artifact. This renders what actually changed: per theme,
+how the page grew or shrank, which cross-links it gained and lost, and whether
+any page was orphaned as a result -- plus the corpus-level audit delta.
+
+    wiki-review --branch curate/compile-20260809 [--base main] [--out FILE]
+
+Read-only. Renders markdown to stdout (or --out).
+"""
+
+import argparse
+import json
+import os
+import re
+import subprocess
+import sys
+
+LINK = re.compile(r"\[\[([^\]\[]+?)\]\]")
+CODE_FENCE = re.compile(r"^```.*?^```", re.M | re.S)
+INLINE_CODE = re.compile(r"`[^`\n]*`")
+
+
+def git(wiki, *args):
+    r = subprocess.run(["git", "-C", wiki] + list(args),
+                       capture_output=True, text=True)
+    return r.stdout if r.returncode == 0 else ""
+
+
+def links(text):
+    text = INLINE_CODE.sub("", CODE_FENCE.sub("", text))
+    out = set()
+    for raw in LINK.findall(text):
+        t = raw.split("|", 1)[0].split("#", 1)[0].strip()
+        if t and not t.startswith(("summary/", "raw/")):
+            out.add(t)
+    return out
+
+
+def audit(wiki, ref, curate):
+    """Audit a ref by materialising it in a detached worktree."""
+    import tempfile, shutil
+    wt = tempfile.mkdtemp(prefix="wiki-review-")
+    try:
+        if not subprocess.run(["git", "-C", wiki, "worktree", "add", "--quiet",
+                               "--detach", wt, ref],
+                              capture_output=True).returncode == 0:
+            return {}
+        r = subprocess.run([curate, "--wiki", wt, "audit", "--json"],
+                           capture_output=True, text=True)
+        if r.returncode != 0:
+            return {}
+        return {c["id"]: c["count"] for c in json.loads(r.stdout)}
+    except Exception:
+        return {}
+    finally:
+        subprocess.run(["git", "-C", wiki, "worktree", "remove", "--force", wt],
+                       capture_output=True)
+        shutil.rmtree(wt, ignore_errors=True)
+
+
+def main():
+    ap = argparse.ArgumentParser(prog="wiki-review", description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--branch", required=True)
+    ap.add_argument("--base", default="main")
+    ap.add_argument("--wiki", default=os.environ.get("WIKI_PATH"))
+    ap.add_argument("--out")
+    a = ap.parse_args()
+    if not a.wiki:
+        print("wiki-review: WIKI_PATH not set", file=sys.stderr)
+        return 2
+    curate = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                          "wiki-curate")
+
+    changed = [l for l in git(a.wiki, "diff", "--name-only",
+                              f"{a.base}..{a.branch}").splitlines() if l.strip()]
+    topics = [f for f in changed if f.startswith("topic/")]
+
+    rows, notes = [], []
+    for f in sorted(topics):
+        before = git(a.wiki, "show", f"{a.base}:{f}")
+        after = git(a.wiki, "show", f"{a.branch}:{f}")
+        lb, la = links(before), links(after)
+        rows.append({
+            "theme": os.path.basename(f)[:-3],
+            "wb": len(before.split()), "wa": len(after.split()),
+            "lb": len(lb), "la": len(la),
+            "dropped": sorted(lb - la), "added": sorted(la - lb),
+            "new": before == "",
+        })
+
+    ab = audit(a.wiki, a.base, curate)
+    aa = audit(a.wiki, a.branch, curate)
+
+    o = []
+    o.append(f"# Compile review — `{a.branch}`\n")
+    o.append(f"{len(rows)} theme pages rebuilt from their sources, "
+             f"against `{a.base}`.\n")
+
+    if ab and aa:
+        o.append("## Corpus health\n")
+        o.append("| check | before | after | delta |")
+        o.append("|---|---:|---:|---:|")
+        for k in sorted(set(ab) | set(aa)):
+            b, c = ab.get(k, 0), aa.get(k, 0)
+            if b == c:
+                continue
+            arrow = "better" if c < b else "WORSE"
+            o.append(f"| {k} | {b} | {c} | {c-b:+d} ({arrow}) |")
+        o.append("")
+
+    tw_b = sum(r["wb"] for r in rows)
+    tw_a = sum(r["wa"] for r in rows)
+    o.append("## Pages\n")
+    o.append("| theme | words | links | dropped |")
+    o.append("|---|---|---|---:|")
+    for r in sorted(rows, key=lambda x: -x["wa"]):
+        dw = r["wa"] - r["wb"]
+        dl = r["la"] - r["lb"]
+        o.append(f"| {r['theme']} | {r['wb']}→{r['wa']} ({dw:+d}) "
+                 f"| {r['lb']}→{r['la']} ({dl:+d}) | {len(r['dropped'])} |")
+    o.append(f"\n**Totals:** {tw_b:,} → {tw_a:,} words ({tw_a-tw_b:+,}).\n")
+
+    dropped_all = sorted({d for r in rows for d in r["dropped"]})
+    if dropped_all:
+        o.append("## Cross-links dropped\n")
+        o.append("Compilation may drop a link it judges weak. Each of these "
+                 "lost at least one inbound reference — check none deserved "
+                 "to keep it.\n")
+        for r in sorted(rows, key=lambda x: -len(x["dropped"])):
+            if r["dropped"]:
+                o.append(f"- **{r['theme']}** dropped: "
+                         + ", ".join(f"`{d}`" for d in r["dropped"]))
+        o.append("")
+
+    out = "\n".join(o) + "\n"
+    if a.out:
+        with open(a.out, "w", encoding="utf-8") as fh:
+            fh.write(out)
+        print(f"wiki-review: wrote {a.out} ({len(rows)} themes)")
+    else:
+        sys.stdout.write(out)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
