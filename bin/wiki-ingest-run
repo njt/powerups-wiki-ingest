@@ -1,10 +1,11 @@
 #!/bin/bash
 # wiki-ingest-run [options] <url> — ingest a URL into the Obsidian wiki via an LLM CLI.
 #
-# Each ingest runs in a git worktree in /tmp. the LLM CLI does all the work (raw
-# file, wiki page, index, log), the script commits to a branch and merges back
-# to main. The merge=union gitattribute on index.md and log.md prevents merge
-# conflicts, so parallel ingests are safe by design.
+# Each ingest runs in a git worktree in /tmp. The script fetches and stages the
+# verbatim raw/ file itself (curl + trafilatura, no LLM); the LLM CLI reads that
+# archive and writes summary/, topic/, index and log; the script then commits to
+# a branch and merges back to main. The merge=union gitattribute on index.md and
+# log.md prevents merge conflicts, so parallel ingests are safe by design.
 #
 # Options:
 #   --repo            GitHub repo deep-analysis mode (shallow-clones the repo,

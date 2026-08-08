@@ -13,13 +13,13 @@ allowed-tools:
 
 All the plumbing lives in bundled scripts on your PATH (this plugin's `bin/` is added to PATH while enabled) — do NOT write your own worktree/merge/commit bash:
 
-- `wiki-ingest-run [options] <url>` — the whole ingest: reaps stale branches, dup-checks, worktree, LLM analysis, commit, merge (retry), best-effort push, cleanup.
+- `wiki-ingest-run [options] <url>` — the whole ingest: reaps stale branches, dup-checks, worktree, fetch + extract (`curl` into `trafilatura`, staged verbatim to `raw/<slug>.md`), LLM analysis, commit, merge (retry), best-effort push, cleanup. The LLM never fetches — it only reads the staged archive.
 - `wiki-ingest-dupcheck <url>` — deterministic duplicate check. Exit 0 = duplicate (prints raw file, title, date), exit 1 = clean.
 - `wiki-ingest-setup [--gitdir <path>]` — one-time: bootstrap a new wiki at `$WIKI_PATH`.
 
 **Configuration (required):** `WIKI_PATH` must point at the wiki directory. If it is unset the scripts stop with instructions — tell the user to set it (and to run `wiki-ingest-setup` once if the wiki doesn't exist yet). `WIKI_INGEST_CLI` optionally overrides the LLM CLI (default `claude`).
 
-`wiki-ingest-run` exit codes: **0** ingested; **2** duplicate (skipped); **3** no changes — the fetch failed, retry with surf (below). Anything else: read stderr.
+`wiki-ingest-run` exit codes: **0** ingested; **2** duplicate (skipped); **3** no changes — extraction returned nothing usable, or what it returned was a login wall / bot check / JS shell; retry with surf (below). Anything else: read stderr.
 
 Your job is orchestration: preprocess URLs, classify them, invoke the script, handle failures, report.
 
@@ -27,7 +27,7 @@ Your job is orchestration: preprocess URLs, classify them, invoke the script, ha
 
 Preprocess before dup-checking — an entity-encoded URL won't match its decoded form in the raw/ frontmatter.
 
-- **x.com / twitter.com**: Replace the domain with `xcancel.com` (same path). WebFetch can't get X content but xcancel.com mirrors it without JS.
+- **x.com / twitter.com**: Replace the domain with `xcancel.com` (same path). x.com serves its posts through JavaScript, so there is nothing in the HTML for trafilatura to extract; xcancel.com mirrors the same content server-rendered.
 - **HTML entities**: Decode `&amp;` → `&`, `&#39;` → `'`, etc.
 - **Skip non-article URLs**: Google searches, GitHub settings pages, product listing pages, local network URLs, auth-required dashboards.
 
@@ -48,13 +48,13 @@ For multiple URLs, launch each as a **separate background Bash call** — one `B
 
 Do NOT write a monolithic batch script with URL arrays, parallel subshells, and a shared wait/merge loop — that path has burned us before (bash 3.2 compat, PID tracking, orphaned processes).
 
-Wait for all background tasks, then collect the exit-3 URLs (fetch failed) and retry those with surf.
+Wait for all background tasks, then collect the exit-3 URLs (nothing extractable) and retry those with surf.
 
 ## Optional: browser fallback for unfetchable URLs (requires the surf CLI)
 
 This step needs the `surf` browser-automation CLI. If it isn't installed, skip it — report the unfetchable URLs and record them in `ingest-queue.md` at the wiki root instead.
 
-Some URLs fail WebFetch (JS-heavy pages, anti-bot protection, Reddit, Bluesky, archive.ph, paywalled sites). For those, grab rendered content with the `surf` browser CLI, then re-run wiki-ingest-run pointing at the grab. For Reddit URLs, skip straight to surf — WebFetch never works on reddit.com.
+The pipeline fetches with `curl` and readability-extracts with `trafilatura`, so it only ever sees server-rendered HTML — no browser, no JavaScript. Some URLs therefore yield nothing and exit 3 (JS-heavy pages, anti-bot protection, Reddit, Bluesky, archive.ph, paywalled sites). For those, grab rendered content with the `surf` browser CLI, then re-run wiki-ingest-run pointing at the grab. For Reddit URLs, skip straight to surf — reddit.com renders its content client-side, so extraction never gets anything.
 
 ### Phase 1: Grab content via surf
 

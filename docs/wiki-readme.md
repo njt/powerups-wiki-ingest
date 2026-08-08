@@ -13,16 +13,17 @@ Wiki/
   index.md        — catalog of every topic page, grouped by section
   log.md          — append-only chronology of ingests and maintenance
   raw/            — immutable source documents (the drop zone)
-  *.md            — topic pages, flat in the root
+  summary/        — a concise precis of each source
+  topic/          — topic pages
 ```
 
 ### Topic pages
 
-Each `.md` file in the root is a wiki page — wrote by the LLM, cross-linked with `[[wikilinks]]`. Pages follow a consistent format: one-paragraph summary, then body with blockquoted source excerpts, thematic analysis, and a sources footer.
+Each `.md` file in `topic/` is a wiki page — written by the LLM, cross-linked with `[[wikilinks]]`. Pages follow a consistent format: one-paragraph summary, then body with blockquoted source excerpts, thematic analysis, and a sources footer. (Pages ingested before the three-tier layout still sit flat in the root; `[[wikilinks]]` resolve by name either way.)
 
 ### `raw/` — Source documents
 
-Every ingested URL gets saved here first. The raw file preserves the original content with YAML frontmatter (url, title, author, dates). Raw files are immutable in principle — topic pages may be updated, but the raw source is the permanent record.
+Every ingested URL gets saved here first, verbatim, by the ingest script — not by the LLM. The raw file preserves the extracted content under minimal YAML frontmatter (url, date_fetched); the curated frontmatter (title, author, published date) lives on the `summary/` precis. Raw files are immutable in principle — topic pages may be updated, but the raw source is the permanent record.
 
 ### `index.md` — The catalog
 
@@ -52,12 +53,12 @@ Every ingest, query, and maintenance run gets appended here. Date, source URL, p
 ## How pages get created
 
 1. I feed a URL to `/wiki-ingest` (or drop content into `raw/`)
-2. The LLM reads the source, checks for duplicates, fetches the page
-3. It writes a topic page with precis, key quotes, themes, and critical analysis
+2. The ingest script checks for duplicates, then fetches the page with `curl` and readability-extracts it with `trafilatura`, saving the result verbatim to `raw/`. No browser and no LLM are involved in this step; if nothing extractable comes back, the ingest stops and the URL is retried through the `surf` browser fallback
+3. The LLM reads that archived file — it never fetches — and writes the `summary/` precis and a `topic/` page with precis, key quotes, themes, and critical analysis
 4. It updates `index.md` and appends to `log.md`
 5. It cross-links to related pages it already knows about
 
-For GitHub repos, the LLM clones the repo and does a deep architectural analysis — reading source files, identifying patterns and trade-offs — before writing.
+For GitHub repos, the script shallow-clones the repo and the LLM does a deep architectural analysis — reading source files, identifying patterns and trade-offs — before writing.
 
 ## How to use it
 

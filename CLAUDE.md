@@ -6,8 +6,8 @@ A Claude Code plugin that ingests URLs into an Obsidian wiki.
 
 - `commands/wiki-ingest.md` — the `/wiki-ingest` slash command (orchestration only).
 - `bin/` — the executables, added to PATH when the plugin is enabled. Call them by bare name.
-  - `wiki-ingest-run` — the ingest engine (fetch → worktree → LLM → commit → merge → push). Also hosts `--verbatim-only` (archive only) and `--summary-only` (backfill a precis from an existing `raw/` file).
-  - `wiki-ingest-fetch` — trafilatura extraction helper; exit 3 on an empty/JS-shell page.
+  - `wiki-ingest-run` — the ingest engine (dup-check → worktree → fetch/extract → LLM → commit → merge → push). The script fetches and stages `raw/<slug>.md`; the LLM only reads it. Also hosts `--verbatim-only` (archive only) and `--summary-only` (backfill a precis from an existing `raw/` file).
+  - `wiki-ingest-fetch` — `curl` piped into `trafilatura --markdown`: deterministic readability extraction, no browser and no LLM; exit 3 on an empty/JS-shell page.
   - `wiki-ingest-dupcheck` — deterministic duplicate detection; scans `raw/` and `summary/`.
   - `wiki-ingest-backfill` — re-archives URLs recorded in `ingest-queue.md`.
   - `wiki-ingest-setup` — one-time wiki bootstrap.

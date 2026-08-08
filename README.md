@@ -6,7 +6,7 @@ A [Claude Code](https://claude.ai/code) plugin: feed it a URL or GitHub repo, an
 
 - **Regular web pages** — fetches content, archives it verbatim, writes a precis and an analysis page (quotes, themes, opinionated take), updates the index and log.
 - **GitHub repos** — shallow-clones the repo and does a deep architectural read (5–10 source files) before writing.
-- **JS-heavy / bot-protected pages** — optional browser fallback via the [`surf`](https://github.com/nat/surf) CLI when plain fetch can't get the content.
+- **JS-heavy / bot-protected pages** — the fetch step is `curl` piped into `trafilatura` (readability extraction, no browser), so pages that only render client-side come back empty; there's an optional browser fallback via the [`surf`](https://github.com/nat/surf) CLI for those.
 
 Each ingest runs in an isolated git worktree, so many URLs process in parallel safely (`merge=union` on the index and log prevents conflicts).
 
