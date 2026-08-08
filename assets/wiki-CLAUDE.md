@@ -26,16 +26,36 @@ Each source produces up to three artifacts, sharing one slug:
 
 `index.md` and `log.md` stay at the wiki root.
 
-## Synthesis on ingest (compounding, not just filing)
+## Ingest files; curation compiles
 
-Ingesting a source is not only "create a new topic page." After writing the new
-page, integrate the source into the existing wiki: find the 2–4 most-related
-existing `topic/` pages and make **minimal, additive** edits — weave in the new
-finding in a sentence or two and add a `[[backlink]]` to the new page where it
-strengthens, nuances, or complicates that page. Never rewrite, reorder, or
-delete another page's content; only add. Skip when nothing is genuinely related.
-This keeps the wiki a compounding artifact rather than a pile of disconnected
-pages.
+These are two operations, and keeping them apart is the point.
+
+**Ingest** handles one source. It writes only files it uniquely owns —
+`raw/<slug>.md`, `summary/<slug>.md`, its own `topic/<Title>.md` — plus the
+union-merged `index.md` and `log.md`. It links OUT from its own new page to the
+2–4 most-related existing pages, in a sentence saying how this source
+strengthens, nuances, or complicates each. It **never edits another topic
+page.** Obsidian derives the backlink, so the connection is made without the
+contended write.
+
+**Curation** handles a theme. `wiki-recompile` rebuilds a topic page from *all*
+of its sources at once, which is the only way a page can be **revised** rather
+than merely appended to — stale claims corrected, duplicated passages merged,
+sections reorganised, weak material dropped.
+
+Why the split: a per-source pass has one document in view and may only add. It
+cannot correct a claim resting on forty sources, and when several run at once
+they collide on the same popular pages. Topic pages are **derived artifacts** —
+regenerable from `raw/` and `summary/`, which are the only things that are
+precious.
+
+Every compiled topic page therefore ends with the digests it was built from:
+
+    *Compiled from N sources: [[summary/slug-a]], [[summary/slug-b]], ...*
+
+That provenance is not decoration. It is what makes a page auditable (do its
+claims survive contact with its sources?), rebuildable (which pages does a new
+source dirty?), and citable.
 
 ## Page Format
 
