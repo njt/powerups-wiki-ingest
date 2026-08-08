@@ -389,6 +389,33 @@ def cmd_audit(v, args):
     return 0
 
 
+def cmd_sources(v, args):
+    """The source set for one theme -- the compiler's input contract."""
+    match = [p for p in v.topics()
+             if p["title"].lower() == args.theme.lower()]
+    if not match:
+        die(f"no topic page titled {args.theme!r}", 4)
+    p = match[0]
+    srcs = v.provenance(p)
+    out = {
+        "theme": p["title"],
+        "path": p["path"],
+        "words": p["words"],
+        "provenance": "declared" if p["sources"] else
+                      ("reconstructed" if p["recon_sources"] else "none"),
+        "sources": [v.pages[s]["path"] for s in srcs if s in v.pages],
+        "archives": [f"raw/{s.split('/', 1)[1]}.md" for s in srcs
+                     if f"raw/{s.split('/', 1)[1]}" in v.pages],
+    }
+    if args.json:
+        print(json.dumps(out, indent=2))
+    else:
+        print(f"{out['theme']}  ({out['provenance']}, {len(out['sources'])} sources)")
+        for s in out["sources"]:
+            print(f"  {s}")
+    return 0
+
+
 def cmd_themes(v, args):
     rows = []
     for p in v.topics():
@@ -423,6 +450,11 @@ def main(argv=None):
     p.add_argument("--show", type=int, default=5,
                    help="example items per check (default 5)")
     p.set_defaults(fn=cmd_audit)
+
+    p = sub.add_parser("sources", help="the source set for one theme")
+    p.add_argument("--theme", required=True)
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(fn=cmd_sources)
 
     p = sub.add_parser("themes", help="pages ranked by source count")
     p.add_argument("--json", action="store_true")

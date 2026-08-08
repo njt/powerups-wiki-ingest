@@ -1,0 +1,213 @@
+#!/bin/bash
+# wiki-compile — regenerate one theme page from the digests it is built from.
+#
+# This is the "compile" step of the curation design: topic pages are DERIVED
+# artifacts, not a mutable store. Ingest files sources; this rebuilds a theme
+# from all of them at once, which is the only way a page can be *revised*
+# rather than merely appended to.
+#
+# Safety, in order of importance:
+#   * The live wiki checkout is NEVER touched. All work happens in a throwaway
+#     git worktree under /tmp, on a branch. Nat's Obsidian window stays on main.
+#   * Nothing is merged. The branch is left for review; `git diff main..BRANCH`
+#     is the deliverable.
+#   * Output is validated before it is committed (page present, provenance
+#     footer present, no conflict markers, not truncated).
+#
+# Usage:
+#   wiki-compile --theme "Software Engineering Craft"
+#   wiki-compile --theme "..." --dry-run       # build context, skip the LLM
+#   wiki-compile --theme "..." --branch curate/my-run
+#
+# Env: WIKI_PATH (required), WIKI_INGEST_CLI (default: claude)
+# Exit: 0 compiled  2 usage/config  3 no sources  4 LLM failed  5 validation failed
+set -euo pipefail
+
+THEME=""; BRANCH=""; DRY_RUN=0; KEEP=0
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --theme)   THEME="${2:-}"; shift 2 ;;
+    --branch)  BRANCH="${2:-}"; shift 2 ;;
+    --dry-run) DRY_RUN=1; shift ;;
+    --keep)    KEEP=1; shift ;;
+    -h|--help) sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    *) echo "wiki-compile: unknown argument: $1" >&2; exit 2 ;;
+  esac
+done
+
+[ -n "$THEME" ] || { echo "wiki-compile: --theme is required" >&2; exit 2; }
+[ -n "${WIKI_PATH:-}" ] || { echo "wiki-compile: WIKI_PATH is not set" >&2; exit 2; }
+[ -d "$WIKI_PATH/topic" ] || { echo "wiki-compile: no topic/ under $WIKI_PATH" >&2; exit 2; }
+CLI="${WIKI_INGEST_CLI:-claude}"
+CURATE="$(dirname "$0")/wiki-curate"
+[ -x "$CURATE" ] || { echo "wiki-compile: wiki-curate not found beside me" >&2; exit 2; }
+
+[ -n "$BRANCH" ] || BRANCH="curate/compile-$(date +%Y%m%d)"
+
+# --- Resolve the theme's source set (deterministic, via wiki-curate) ---------
+SRC_JSON="$("$CURATE" sources --theme "$THEME" --json)" || exit 3
+N_SRC=$(printf '%s' "$SRC_JSON" | python3 -c 'import json,sys;print(len(json.load(sys.stdin)["sources"]))')
+PAGE_REL=$(printf '%s' "$SRC_JSON" | python3 -c 'import json,sys;print(json.load(sys.stdin)["path"])')
+PROV=$(printf '%s' "$SRC_JSON" | python3 -c 'import json,sys;print(json.load(sys.stdin)["provenance"])')
+
+if [ "$N_SRC" -lt 2 ]; then
+  echo "wiki-compile: '$THEME' has $N_SRC source(s); a theme page needs 2+." >&2
+  echo "wiki-compile: single-source material belongs in summary/, not topic/." >&2
+  exit 3
+fi
+echo "wiki-compile: $THEME — $N_SRC sources ($PROV provenance)"
+
+# --- Throwaway worktree: the live checkout must never move -------------------
+WT="$(mktemp -d "${TMPDIR:-/tmp}/wiki-compile-XXXXXX")"
+cleanup() {
+  if [ "$KEEP" -eq 1 ]; then
+    echo "wiki-compile: worktree kept at $WT" >&2; return
+  fi
+  git -C "$WIKI_PATH" worktree remove --force "$WT" 2>/dev/null || rm -rf "$WT"
+}
+trap cleanup EXIT
+
+if git -C "$WIKI_PATH" show-ref --verify --quiet "refs/heads/$BRANCH"; then
+  git -C "$WIKI_PATH" worktree add --quiet "$WT" "$BRANCH"
+else
+  git -C "$WIKI_PATH" worktree add --quiet -b "$BRANCH" "$WT" main
+fi
+
+# --- Assemble the context: every digest, in one file the model must read -----
+# Concatenating rather than handing over a list of paths is deliberate: it
+# guarantees the compiler sees ALL the evidence, in one Read, instead of
+# sampling whichever files it feels like opening.
+CTX="$WT/.compile-context.md"
+{
+  printf '# Compilation context for: %s\n\n' "$THEME"
+  printf 'Digests: %s. Every one is evidence for this theme.\n\n---\n\n' "$N_SRC"
+  printf '%s' "$SRC_JSON" | python3 -c '
+import json,sys,os
+d=json.load(sys.stdin); wiki=os.environ["WIKI_PATH"]
+for rel in d["sources"]:
+    p=os.path.join(wiki,rel)
+    try:
+        with open(p,encoding="utf-8",errors="replace") as fh: body=fh.read()
+    except OSError: continue
+    print(f"\n## SOURCE: {rel}\n")
+    print(body.strip())
+    print("\n---")
+'
+} > "$CTX"
+CTX_WORDS=$(wc -w < "$CTX" | tr -d ' ')
+echo "wiki-compile: context assembled — $CTX_WORDS words from $N_SRC digests"
+
+if [ "$DRY_RUN" -eq 1 ]; then
+  cp "$CTX" "${TMPDIR:-/tmp}/wiki-compile-context.md"
+  echo "wiki-compile: DRY RUN — context at ${TMPDIR:-/tmp}/wiki-compile-context.md"
+  exit 0
+fi
+
+# --- Compile ----------------------------------------------------------------
+TODAY=$(date +%Y-%m-%d)
+set +e
+cat <<COMPILE_EOF | (cd "$WT" && "$CLI" -p --allowedTools "Read,Write" --add-dir "$WT")
+You are COMPILING a wiki theme page. Wiki root: $WT
+
+Read these two files first:
+  1. .compile-context.md — the $N_SRC source digests this theme is built from.
+     Read ALL of it. It is the complete evidence base.
+  2. $PAGE_REL — the current version of this page.
+
+Then write exactly one file: $PAGE_REL
+
+WHAT YOU ARE DOING. This page is a DERIVED artifact. You are not appending to
+it — you are rebuilding it from all $N_SRC sources at once. That means you may
+and should REVISE: correct claims the evidence no longer supports, fix stale
+counts and dates, merge duplicated passages, drop what does not earn its place,
+and reorganise. Preserve genuinely good writing from the current version, but
+you are not obliged to keep its structure.
+
+WHAT MAKES THIS PAGE GOOD. It must ARGUE, not enumerate. A list of
+one-paragraph-per-source is a failure. The reader wants to know what this
+theme IS, what the sources collectively establish, where they DISAGREE, and
+what is still unknown. Synthesis means comparison: name the tension between
+sources, say which is more convincing and why.
+
+Required structure:
+
+# $THEME
+
+A one-paragraph thesis: what this theme is and what the wiki now believes
+about it. Sharp and falsifiable, not a topic sentence.
+
+---
+
+## The Argument
+
+The substance, organised by IDEA rather than by source. Cite sources inline as
+[[wikilinks]] using their existing page titles. Compare and contrast.
+
+## Where the Sources Disagree
+
+Genuine tensions. If there are none, omit this section entirely rather than
+inventing one.
+
+## What's Missing
+
+Gaps the evidence does not cover — the honest edges of what you can claim.
+
+---
+
+*Compiled from $N_SRC sources: <list every digest as [[summary/slug]], comma-separated>*
+*Last compiled: $TODAY*
+
+RULES.
+- Ground every claim in the digests. If it is not in the evidence, do not assert it.
+- Do NOT invent [[wikilinks]] to pages you have not seen named in the context or
+  the current page. Dead links are a real and measured problem in this wiki.
+- Do not write a page count or corpus statistic; those go stale and there is no
+  reliable number available to you.
+- Write for a smart reader who has not read the sources. British-neutral prose,
+  no marketing register, no "in today's fast-paced world".
+- Do NOT create, delete or modify any other file. One file: $PAGE_REL
+- Do NOT run git. Do not touch .compile-context.md.
+COMPILE_EOF
+RC=$?
+set -e
+[ "$RC" -eq 0 ] || { echo "wiki-compile: LLM failed (exit $RC)" >&2; exit 4; }
+
+# --- Validate before committing ---------------------------------------------
+rm -f "$CTX"
+FAIL=""
+[ -f "$WT/$PAGE_REL" ] || FAIL="page not written"
+if [ -z "$FAIL" ]; then
+  W=$(wc -w < "$WT/$PAGE_REL" | tr -d ' ')
+  [ "$W" -ge 250 ] || FAIL="page suspiciously short ($W words)"
+fi
+if [ -z "$FAIL" ] && grep -qE '^(<<<<<<<|>>>>>>>) ' "$WT/$PAGE_REL"; then
+  FAIL="conflict markers in output"
+fi
+if [ -z "$FAIL" ] && ! grep -q 'Compiled from' "$WT/$PAGE_REL"; then
+  FAIL="no provenance footer"
+fi
+# The compiler must not have touched anything else.
+OTHER=$(git -C "$WT" status --porcelain -- . ':!'"$PAGE_REL" | head -5)
+if [ -z "$FAIL" ] && [ -n "$OTHER" ]; then
+  FAIL="modified other files: $(printf '%s' "$OTHER" | tr '\n' ' ')"
+fi
+if [ -n "$FAIL" ]; then
+  echo "wiki-compile: VALIDATION FAILED — $FAIL" >&2
+  echo "wiki-compile: nothing committed. Re-run with --keep to inspect." >&2
+  exit 5
+fi
+
+git -C "$WT" add -- "$PAGE_REL"
+if git -C "$WT" diff --cached --quiet; then
+  echo "wiki-compile: no change to $PAGE_REL (already current)"
+  exit 0
+fi
+git -C "$WT" commit --quiet -m "Compile topic/$THEME from $N_SRC sources
+
+Rebuilt as a derived artifact rather than appended to, so stale claims and
+duplicated passages could be revised. Provenance: $PROV.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
+NEW=$(wc -w < "$WT/$PAGE_REL" | tr -d ' ')
+echo "wiki-compile: COMPILED $PAGE_REL ($NEW words) on branch $BRANCH"
+echo "wiki-compile: review with  git -C \"\$WIKI_PATH\" diff main..$BRANCH"
