@@ -39,7 +39,9 @@ CURATE="$HERE/wiki-curate"; COMPILE="$HERE/wiki-compile"
 LIST="$(mktemp "${TMPDIR:-/tmp}/wiki-recompile-XXXXXX")"
 trap 'rm -f "$LIST" "$LIST.before" "$LIST.after"' EXIT
 if [ -n "$THEMES_FILE" ]; then
-  grep -v '^[[:space:]]*$' "$THEMES_FILE" > "$LIST"
+  # `|| true`: grep exits 1 on an all-blank file, and set -e would kill the
+  # script before the "nothing to compile" message could explain why.
+  grep -v '^[[:space:]]*$' "$THEMES_FILE" > "$LIST" || true
 else
   "$CURATE" themes --min "$MIN_SOURCES" --json \
     | python3 -c '

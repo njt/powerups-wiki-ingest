@@ -109,6 +109,16 @@ if [ "$DRY_RUN" -eq 1 ]; then
 fi
 
 # --- Compile ----------------------------------------------------------------
+# The page is already on disk (the worktree is checked out from BASE), so
+# "content unchanged" cannot distinguish a model that wrote nothing from one
+# that legitimately reproduced the page. The mtime can: if the file was never
+# touched, the model never wrote it.
+# mtime resolution here is whole seconds, and the checkout and the model's write
+# can land in the same one -- so back-date the file first. Any write at all
+# moves it to now, which makes "never touched" unambiguous.
+mtime_of() { stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null || echo 0; }
+touch -t 200001010000 "$WT/$PAGE_REL" 2>/dev/null || true
+PRE_MTIME=$(mtime_of "$WT/$PAGE_REL")
 TODAY=$(date +%Y-%m-%d)
 set +e
 cat <<COMPILE_EOF | (cd "$WT" && "$CLI" -p --allowedTools "Read,Write" --add-dir "$WT")
@@ -221,9 +231,13 @@ old=subprocess.run(["git","-C",wt,"show",f"HEAD:{rel}"],
                    capture_output=True,text=True).stdout
 new=open(os.path.join(wt,rel),encoding="utf-8",errors="replace").read()
 lost=sorted(links(old)-links(new))
-print("; ".join(lost[:6]) + (" ..." if len(lost)>6 else "") if lost else "")
+# Emit the count itself; counting separators in the shell was off by one.
+print(f"{len(lost)}\t" + "; ".join(lost[:6]) + (" ..." if len(lost)>6 else "")
+      if lost else "")
 ')
-  [ -z "$LOST" ] || FAIL="dropped $(printf '%s' "$LOST" | tr ';' '\n' | wc -l | tr -d ' ') cross-link(s): $LOST"
+  if [ -n "$LOST" ]; then
+    FAIL="dropped ${LOST%%	*} cross-link(s): ${LOST#*	}"
+  fi
 fi
 # The compiler must not have touched anything else.
 OTHER=$(git -C "$WT" status --porcelain -- . ':!'"$PAGE_REL" | head -5)
@@ -238,6 +252,13 @@ fi
 
 git -C "$WT" add -- "$PAGE_REL"
 if git -C "$WT" diff --cached --quiet; then
+  # Untouched file => the model never wrote it. Reporting that as success would
+  # let a dead model look like a clean batch of compiles.
+  if [ "$(mtime_of "$WT/$PAGE_REL")" = "$PRE_MTIME" ]; then
+    echo "wiki-compile: the model never wrote $PAGE_REL (file untouched)." >&2
+    echo "wiki-compile: treating as failure, not as a no-op." >&2
+    exit 6
+  fi
   echo "wiki-compile: no change to $PAGE_REL (already current)"
   exit 0
 fi
@@ -248,12 +269,15 @@ duplicated passages could be revised. Provenance: $PROV.
 
 Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 
-# Advance the branch to the commit we just built detached.
+# Advance the branch to the commit we just built detached. update-ref, NOT
+# `branch -f`: branch -f refuses to move a branch that is checked out in any
+# worktree, which reintroduces the whole-batch failure the detached build was
+# meant to cure -- same effect, different message. update-ref has no such rule.
 NEWREF=$(git -C "$WT" rev-parse HEAD)
-if ! git -C "$WIKI_PATH" branch -f "$BRANCH" "$NEWREF" 2>/dev/null; then
-  echo "wiki-compile: could not move $BRANCH (checked out somewhere?)" >&2
+if ! git -C "$WIKI_PATH" update-ref "refs/heads/$BRANCH" "$NEWREF" 2>/dev/null; then
+  echo "wiki-compile: could not move $BRANCH" >&2
   echo "wiki-compile: the commit exists at $NEWREF — recover with:" >&2
-  echo "  git -C \"\$WIKI_PATH\" branch -f $BRANCH $NEWREF" >&2
+  echo "  git -C \"\$WIKI_PATH\" update-ref refs/heads/$BRANCH $NEWREF" >&2
   exit 5
 fi
 NEW=$(wc -w < "$WT/$PAGE_REL" | tr -d ' ')
