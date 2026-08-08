@@ -417,6 +417,63 @@ def cmd_audit(v, args):
     return 0
 
 
+def cmd_gaps(v, args):
+    """Harvest every compiled page's "What's Missing" section.
+
+    Closing the loop the corpus cannot close for itself: a compiled theme knows
+    what its evidence does NOT cover, and collectively those admissions are a
+    reading list. This is the anti-stagnation input -- an agent-maintained wiki
+    left to its own devices converges on a fixed point.
+    """
+    out = []
+    for p in sorted(v.topics(), key=lambda x: x["title"]):
+        body = p["body"]
+        m = re.search(r"^##+\s*What'?s Missing\s*$", body, re.M | re.I)
+        if not m:
+            continue
+        rest = body[m.end():]
+        nxt = re.search(r"^(##\s|\*Compiled from|---\s*$)", rest, re.M)
+        section = rest[:nxt.start()] if nxt else rest
+        for g in re.findall(r"^\*\*(.+?)\.?\*\*", section, re.M):
+            out.append({"theme": p["title"], "gap": g.strip()})
+    if args.json:
+        print(json.dumps(out, indent=2))
+        return 0
+    cur = None
+    for r in out:
+        if r["theme"] != cur:
+            cur = r["theme"]
+            print(f"\n{cur}")
+        print(f"  - {r['gap']}")
+    print(f"\n{len(out)} gaps across "
+          f"{len({r['theme'] for r in out})} compiled themes.")
+    return 0
+
+
+def cmd_fixme(v, args):
+    """Corrections the reader left inline, as %%fix: ...%% Obsidian comments.
+
+    Reading is the highest-quality curation signal available and it is free,
+    because the reading was going to happen anyway. This makes noticing
+    something wrong cost five seconds instead of a task-switch.
+    """
+    pat = re.compile(r"%%\s*fix:\s*(.+?)%%", re.S | re.I)
+    out = []
+    for p in sorted(v.pages.values(), key=lambda x: x["key"]):
+        if not p["authored"]:
+            continue
+        for m in pat.finditer(p["body"]):
+            out.append({"page": p["path"],
+                        "note": " ".join(m.group(1).split())})
+    if args.json:
+        print(json.dumps(out, indent=2))
+        return 0
+    for r in out:
+        print(f"{r['page']}\n  {r['note']}")
+    print(f"\n{len(out)} correction(s) pending.")
+    return 0
+
+
 def cmd_sources(v, args):
     """The source set for one theme -- the compiler's input contract."""
     match = [p for p in v.topics()
@@ -478,6 +535,14 @@ def main(argv=None):
     p.add_argument("--show", type=int, default=5,
                    help="example items per check (default 5)")
     p.set_defaults(fn=cmd_audit)
+
+    p = sub.add_parser("gaps", help="what compiled themes say they are missing")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(fn=cmd_gaps)
+
+    p = sub.add_parser("fixme", help="pending %%fix: ...%% corrections")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(fn=cmd_fixme)
 
     p = sub.add_parser("sources", help="the source set for one theme")
     p.add_argument("--theme", required=True)
