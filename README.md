@@ -8,7 +8,7 @@ A [Claude Code](https://claude.ai/code) plugin: feed it a URL or GitHub repo, an
 - **GitHub repos** — shallow-clones the repo and does a deep architectural read (5–10 source files) before writing.
 - **JS-heavy / bot-protected pages** — the fetch step is `curl` piped into `trafilatura` (readability extraction, no browser), so pages that only render client-side come back empty; there's an optional browser fallback via the [`surf`](https://github.com/nat/surf) CLI for those.
 
-Each ingest runs in an isolated git worktree, so many URLs process in parallel safely (`merge=union` on the index and log prevents conflicts).
+Each ingest runs in an isolated git worktree and writes only files it uniquely owns, so many URLs process in parallel without contending. `index.md` and `log.md` carry `merge=union`; nothing else is shared, because cross-page curation is a separate step (below) rather than something each ingest does on its way past.
 
 ### Three-tier layout
 
@@ -21,6 +21,41 @@ Every source lands in three places, so the verbatim record stays separable from 
 | `topic/<Title>.md` | analysis and synthesis, cross-linked with `[[wikilinks]]`. May draw on several sources. |
 
 `index.md` and `log.md` stay at the wiki root.
+
+## Curation
+
+Ingest files sources. **Curation is a separate operation over the whole corpus**,
+because a pass that has read one document can only ever append to a shared page —
+it cannot revise a claim that rests on forty sources.
+
+```bash
+wiki-curate index                 # provenance and link graph
+wiki-curate audit                 # 12 deterministic health checks
+wiki-curate themes --min 4        # pages ranked by how many sources back them
+wiki-curate sources --theme "X"   # the source set for one theme
+
+wiki-compile --theme "X"          # rebuild one theme from ALL its sources
+wiki-recompile --top 25           # rebuild the top themes onto one branch
+```
+
+`wiki-curate` is read-only, deterministic, and needs no LLM or network — under a
+second across a thousand-page wiki, so it is cheap enough to run nightly. It
+reports dead links, orphans, pages with no provenance, duplicate titles,
+oversized pages, stale self-referential counts, and **wanted pages**: absent
+pages that several others link to, which is the corpus naming a theme it wants.
+
+`wiki-compile` treats a topic page as a **derived artifact** and rebuilds it from
+every digest that backs it, so it can correct stale claims, merge duplicated
+passages and drop weak material rather than only adding. It works in a throwaway
+detached worktree and commits to a branch — your live checkout never moves and
+nothing is merged without you. Output is validated (provenance footer present,
+no conflict markers, no collateral writes) before it is committed.
+
+`wiki-recompile` drives the whole set serially — one writer, one theme at a time
+— and audits the wiki before and after, so "this improved the wiki" is a
+measurement rather than an opinion.
+
+Design and rationale: [`docs/design/monograph-what-great-looks-like.md`](docs/design/monograph-what-great-looks-like.md).
 
 ## Install
 
