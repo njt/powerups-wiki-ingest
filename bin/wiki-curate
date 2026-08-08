@@ -1,0 +1,438 @@
+#!/usr/bin/env python3
+"""wiki-curate — the curation operation Karpathy's pattern calls "lint".
+
+The ingest pipeline (wiki-ingest-run) files sources. This tool operates on the
+*whole corpus*: it builds the provenance and link graph, and reports on the
+health of the wiki. It is deliberately deterministic — no LLM, no network — so
+it is cheap enough to run every night and trustworthy enough to act on.
+
+    wiki-curate index [--json]     build the graph; print a summary
+    wiki-curate audit [--json]     health report (dead links, orphans, ...)
+    wiki-curate themes [--min N]   topic pages ranked by source count
+
+Config: WIKI_PATH (required), or --wiki. Read-only: this tool never writes to
+the wiki. See docs/design/monograph-what-great-looks-like.md for the design.
+
+Python 3.8+, standard library only.
+"""
+
+import argparse
+import json
+import os
+import re
+import sys
+from collections import defaultdict
+
+# [[Target]], [[Target|alias]], [[Target#anchor]], [[dir/Target]]
+WIKILINK = re.compile(r"\[\[([^\]\[]+?)\]\]")
+# Code is not markup. `[[ -z "$TMUX" ]]` is bash and `[[String: Any]]` is Swift;
+# both appear in the corpus and neither is a wikilink.
+CODE_FENCE = re.compile(r"^```.*?^```", re.M | re.S)
+INLINE_CODE = re.compile(r"`[^`\n]*`")
+# A "the wiki has N pages" style claim — self-referential and reliably stale.
+SELF_COUNT = re.compile(
+    r"(?:wiki(?:'s)?\s+(?:has|contains)|of\s+the\s+wiki's)\s+~?([\d,]+)\s+"
+    r"(?:topic\s+)?pages?",
+    re.I,
+)
+FRONTMATTER_KEY = re.compile(r"^([A-Za-z_][A-Za-z0-9_-]*):\s*(.*)$")
+
+WIKI_DIRS = ("topic", "summary", "raw")
+
+
+def die(msg, code=2):
+    print(f"wiki-curate: {msg}", file=sys.stderr)
+    sys.exit(code)
+
+
+def resolve_wiki(arg):
+    wiki = arg or os.environ.get("WIKI_PATH")
+    if not wiki:
+        die("WIKI_PATH is not set and --wiki was not given.\n"
+            "  export WIKI_PATH=/path/to/wiki")
+    wiki = os.path.expanduser(wiki)
+    if not os.path.isdir(wiki):
+        die(f"not a directory: {wiki}")
+    if not os.path.isdir(os.path.join(wiki, "topic")):
+        die(f"no topic/ directory under {wiki} — is this a wiki?")
+    return wiki
+
+
+def read(path):
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as fh:
+            return fh.read()
+    except OSError:
+        return ""
+
+
+def parse_frontmatter(text):
+    """Return (dict, body). Tolerant: the corpus predates any schema."""
+    if not text.startswith("---"):
+        return {}, text
+    end = text.find("\n---", 3)
+    if end == -1:
+        return {}, text
+    meta = {}
+    for line in text[3:end].splitlines():
+        m = FRONTMATTER_KEY.match(line.strip())
+        if m:
+            meta[m.group(1)] = m.group(2).strip().strip('"')
+    return meta, text[end + 4:]
+
+
+def link_targets(text):
+    """Every wikilink target in `text`, normalised (alias and anchor stripped).
+
+    Code spans are stripped first so that shell and Swift syntax in quoted
+    source is not mistaken for markup.
+    """
+    text = CODE_FENCE.sub("", text)
+    text = INLINE_CODE.sub("", text)
+    out = []
+    for raw in WIKILINK.findall(text):
+        t = raw.split("|", 1)[0].split("#", 1)[0].strip()
+        if t:
+            out.append(t)
+    return out
+
+
+class Vault:
+    """The corpus: wiki pages, plus every file that can satisfy a wikilink.
+
+    Obsidian resolves [[Name]] by basename anywhere in the vault, so link
+    resolution must consider non-wiki content (Agent Journals/, etc.) even
+    though those files are not wiki pages and are never audited.
+    """
+
+    def __init__(self, wiki):
+        self.wiki = wiki
+        self.pages = {}          # "topic/Foo" -> record
+        self.by_basename = defaultdict(list)   # "Foo" -> [relpaths]
+        self._scan()
+        self._link()
+
+    def _scan(self):
+        for dirpath, dirnames, filenames in os.walk(self.wiki):
+            dirnames[:] = [d for d in dirnames if d != ".git"]
+            for fn in filenames:
+                if not fn.endswith(".md"):
+                    continue
+                full = os.path.join(dirpath, fn)
+                rel = os.path.relpath(full, self.wiki)
+                key = rel[:-3]                      # drop .md
+                base = os.path.basename(key)
+                self.by_basename[base].append(key)
+                top = rel.split(os.sep, 1)[0]
+                if top not in WIKI_DIRS:
+                    continue                        # linkable, not a wiki page
+                text = read(full)
+                meta, body = parse_frontmatter(text)
+                # raw/ is verbatim source, not authored markup: any [[...]] in
+                # it belongs to the original document and is not a wikilink.
+                authored = top != "raw"
+                self.pages[key] = {
+                    "key": key,
+                    "kind": top,
+                    "title": base,
+                    "path": rel,
+                    "meta": meta,
+                    "authored": authored,
+                    "words": len(body.split()),
+                    "links": link_targets(body) if authored else [],
+                    "body": body,
+                }
+
+    def resolve(self, target):
+        """Resolve a wikilink target to a vault key, or None."""
+        if target in self.by_basename:
+            hits = self.by_basename[target]
+            return hits[0] if len(hits) == 1 else sorted(hits)[0]
+        # path-qualified: [[summary/hunk-dev]]
+        norm = target.lstrip("./")
+        for key in (norm, norm + ".md"):
+            k = key[:-3] if key.endswith(".md") else key
+            if k in self.pages:
+                return k
+        base = os.path.basename(norm)
+        if base in self.by_basename:
+            return sorted(self.by_basename[base])[0]
+        return None
+
+    def _link(self):
+        """Populate resolved edges, inbound counts, and declared provenance."""
+        self.inbound = defaultdict(set)
+        for key, p in self.pages.items():
+            resolved, dead = [], []
+            for t in p["links"]:
+                r = self.resolve(t)
+                (resolved.append(r) if r else dead.append(t))
+            p["resolved"] = resolved
+            p["dead_links"] = dead
+            for r in resolved:
+                self.inbound[r].add(key)
+            # Declared provenance: links into summary/
+            p["sources"] = sorted({r for r in resolved if r.startswith("summary/")})
+
+        # Reconstructed provenance for pages that declare none. A hub's sources
+        # are the union of the digests of the pages it links to -- verified on
+        # topic/Software Engineering Craft.md (55 links, 55 resolve, 51 with
+        # provenance). Deterministic; no model required.
+        for key, p in self.pages.items():
+            if p["kind"] != "topic" or p["sources"]:
+                p["recon_sources"] = []
+                continue
+            recon = set()
+            for r in p["resolved"]:
+                nb = self.pages.get(r)
+                if nb:
+                    recon.update(nb["sources"])
+            p["recon_sources"] = sorted(recon)
+
+    def topics(self):
+        return [p for p in self.pages.values() if p["kind"] == "topic"]
+
+    def provenance(self, p):
+        return p["sources"] or p["recon_sources"]
+
+
+# --------------------------------------------------------------------------
+# audit checks. Each returns (id, title, [items]); deterministic and cheap.
+# --------------------------------------------------------------------------
+
+def check_dead_links(v):
+    items = []
+    for p in sorted(v.pages.values(), key=lambda x: x["key"]):
+        for t in sorted(set(p["dead_links"])):
+            items.append({"page": p["path"], "target": t})
+    return ("dead-links", "Wikilinks that resolve to nothing", items)
+
+
+def check_orphans(v):
+    items = [{"page": p["path"], "words": p["words"]}
+             for p in sorted(v.topics(), key=lambda x: -x["words"])
+             if not v.inbound.get(p["key"])]
+    return ("orphans", "Topic pages nothing links to", items)
+
+
+def check_no_provenance(v):
+    items = []
+    for p in sorted(v.topics(), key=lambda x: -x["words"]):
+        if not v.provenance(p):
+            items.append({"page": p["path"], "words": p["words"]})
+    return ("no-provenance",
+            "Topic pages with no sources, declared or reconstructable", items)
+
+
+def check_reconstructed(v):
+    items = []
+    for p in sorted(v.topics(), key=lambda x: -len(x["recon_sources"])):
+        if not p["sources"] and p["recon_sources"]:
+            items.append({"page": p["path"], "words": p["words"],
+                          "reconstructed": len(p["recon_sources"])})
+    return ("reconstructed-provenance",
+            "Hubs whose sources were recovered from the link graph", items)
+
+
+def check_single_source(v):
+    items = [{"page": p["path"], "source": p["sources"][0]}
+             for p in sorted(v.topics(), key=lambda x: x["key"])
+             if len(p["sources"]) == 1]
+    return ("single-source",
+            "Topic pages built from exactly one source (digest with opinions)",
+            items)
+
+
+def check_dangling_sources(v):
+    items = []
+    for p in sorted(v.topics(), key=lambda x: x["key"]):
+        for s in p["sources"]:
+            if s not in v.pages:
+                items.append({"page": p["path"], "missing": s})
+    return ("dangling-provenance", "Cited digests that do not exist", items)
+
+
+def check_orphan_digests(v):
+    cited = set()
+    for p in v.topics():
+        cited.update(v.provenance(p))
+    items = [{"page": p["path"]}
+             for p in sorted(v.pages.values(), key=lambda x: x["key"])
+             if p["kind"] == "summary" and p["key"] not in cited]
+    return ("uncited-digests", "Digests no topic page draws on", items)
+
+
+def check_missing_digest(v):
+    raws = {p["key"].split("/", 1)[1] for p in v.pages.values()
+            if p["kind"] == "raw"}
+    sums = {p["key"].split("/", 1)[1] for p in v.pages.values()
+            if p["kind"] == "summary"}
+    items = ([{"slug": s, "issue": "raw without digest"}
+              for s in sorted(raws - sums)]
+             + [{"slug": s, "issue": "digest without archive"}
+                for s in sorted(sums - raws)])
+    return ("archive-digest-mismatch", "Archive and digest out of step", items)
+
+
+def check_stale_counts(v):
+    actual = len(v.topics())
+    items = []
+    for p in sorted(v.pages.values(), key=lambda x: x["key"]):
+        for m in SELF_COUNT.finditer(p["body"]):
+            claimed = int(m.group(1).replace(",", ""))
+            # Only flag a real drift; "~1000" against 1017 is honest enough.
+            if abs(claimed - actual) > max(25, actual * 0.05):
+                items.append({"page": p["path"], "claims": claimed,
+                              "actual": actual,
+                              "text": m.group(0).strip()})
+    return ("stale-self-counts",
+            "Pages asserting a page count that has drifted", items)
+
+
+def check_wanted(v, floor=2):
+    """Dead link targets ranked by demand.
+
+    A page that several others link to but which does not exist is not merely a
+    broken link -- it is the corpus naming a theme it wants. This is MediaWiki's
+    "most wanted pages", and it is the cheapest theme-discovery signal there is.
+    """
+    want = defaultdict(set)
+    for p in v.pages.values():
+        for t in set(p["dead_links"]):
+            want[t].add(p["path"])
+    items = [{"wanted": t, "by": len(ps), "pages": sorted(ps)[:4]}
+             for t, ps in want.items() if len(ps) >= floor]
+    items.sort(key=lambda x: (-x["by"], x["wanted"]))
+    return ("wanted-pages",
+            f"Absent pages that {floor}+ other pages link to (theme demand)",
+            items)
+
+
+def check_duplicate_titles(v):
+    dupes = defaultdict(list)
+    for p in v.topics():
+        dupes[p["title"].lower()].append(p["path"])
+    items = [{"title": t, "pages": sorted(ps)}
+             for t, ps in sorted(dupes.items()) if len(ps) > 1]
+    return ("duplicate-titles", "Topic pages sharing a title", items)
+
+
+def check_oversized(v, limit=2500):
+    items = [{"page": p["path"], "words": p["words"]}
+             for p in sorted(v.topics(), key=lambda x: -x["words"])
+             if p["words"] > limit]
+    return ("oversized",
+            f"Topic pages over {limit} words (candidates for splitting)", items)
+
+
+CHECKS = [
+    check_dead_links, check_wanted, check_no_provenance, check_dangling_sources,
+    check_stale_counts, check_duplicate_titles, check_orphans,
+    check_oversized, check_reconstructed, check_single_source,
+    check_orphan_digests, check_missing_digest,
+]
+
+
+def cmd_index(v, args):
+    topics = v.topics()
+    declared = [p for p in topics if p["sources"]]
+    multi = [p for p in topics if len(p["sources"]) > 1]
+    recon = [p for p in topics if not p["sources"] and p["recon_sources"]]
+    stats = {
+        "archive": sum(1 for p in v.pages.values() if p["kind"] == "raw"),
+        "digests": sum(1 for p in v.pages.values() if p["kind"] == "summary"),
+        "topics": len(topics),
+        "topics_declaring_sources": len(declared),
+        "topics_multi_source": len(multi),
+        "topics_single_source": len(declared) - len(multi),
+        "topics_provenance_reconstructed": len(recon),
+        "topics_no_provenance": len(topics) - len(declared) - len(recon),
+        "wikilinks": sum(len(p["links"]) for p in v.pages.values()),
+        "dead_wikilinks": sum(len(p["dead_links"]) for p in v.pages.values()),
+    }
+    if args.json:
+        print(json.dumps(stats, indent=2))
+        return 0
+    print("Corpus")
+    for k in ("archive", "digests", "topics"):
+        print(f"  {k:<34}{stats[k]:>6}")
+    print("\nProvenance")
+    for k in ("topics_multi_source", "topics_single_source",
+              "topics_provenance_reconstructed", "topics_no_provenance"):
+        print(f"  {k:<34}{stats[k]:>6}")
+    print("\nGraph")
+    for k in ("wikilinks", "dead_wikilinks"):
+        print(f"  {k:<34}{stats[k]:>6}")
+    return 0
+
+
+def cmd_audit(v, args):
+    results = [c(v) for c in CHECKS]
+    if args.json:
+        print(json.dumps(
+            [{"id": i, "title": t, "count": len(x), "items": x}
+             for i, t, x in results], indent=2))
+        return 0
+    total = 0
+    for cid, title, items in results:
+        total += len(items)
+        flag = "  " if not items else "!!"
+        print(f"{flag} {len(items):>5}  {title}  [{cid}]")
+        for it in items[:args.show]:
+            bits = ", ".join(f"{k}={v_}" for k, v_ in it.items()
+                             if k not in ("text",))
+            print(f"          {bits}")
+        if len(items) > args.show:
+            print(f"          ... and {len(items) - args.show} more"
+                  f" (--show N, or --json)")
+    print(f"\n{total} findings across {len(results)} checks.")
+    return 0
+
+
+def cmd_themes(v, args):
+    rows = []
+    for p in v.topics():
+        srcs = v.provenance(p)
+        if len(srcs) >= args.min:
+            rows.append((len(srcs), p["words"], p["title"],
+                         "declared" if p["sources"] else "reconstructed"))
+    rows.sort(reverse=True)
+    if args.json:
+        print(json.dumps([{"sources": s, "words": w, "title": t, "provenance": k}
+                          for s, w, t, k in rows], indent=2))
+        return 0
+    print(f"{'src':>4} {'words':>6}  {'provenance':<14} title")
+    for s, w, t, k in rows:
+        print(f"{s:>4} {w:>6}  {k:<14} {t}")
+    print(f"\n{len(rows)} pages with >= {args.min} sources.")
+    return 0
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(prog="wiki-curate", description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--wiki", help="wiki root (default: $WIKI_PATH)")
+    sub = ap.add_subparsers(dest="cmd", required=True)
+
+    p = sub.add_parser("index", help="build the graph and print a summary")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(fn=cmd_index)
+
+    p = sub.add_parser("audit", help="deterministic health report")
+    p.add_argument("--json", action="store_true")
+    p.add_argument("--show", type=int, default=5,
+                   help="example items per check (default 5)")
+    p.set_defaults(fn=cmd_audit)
+
+    p = sub.add_parser("themes", help="pages ranked by source count")
+    p.add_argument("--json", action="store_true")
+    p.add_argument("--min", type=int, default=2,
+                   help="minimum sources (default 2)")
+    p.set_defaults(fn=cmd_themes)
+
+    args = ap.parse_args(argv)
+    return args.fn(Vault(resolve_wiki(args.wiki)), args)
+
+
+if __name__ == "__main__":
+    sys.exit(main())
