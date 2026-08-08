@@ -34,6 +34,14 @@ SANDBOX=$(mktemp -d "${TMPDIR:-/tmp}/wiki-compile-test.XXXXXX")
 export WIKI_PATH="$SANDBOX/wiki"
 HOLDER="$SANDBOX/holder-worktree"    # the extra worktree case 3 stands up
 
+# `wiki-compile --dry-run` writes its context to this FIXED path by design
+# (bin/wiki-compile:103), outside anything this test controls. Reap it on the
+# way out, but only if the dry-run case is what created it — never delete a
+# file that was already there.
+DRY_CTX="${TMPDIR:-/tmp}/wiki-compile-context.md"
+DRY_CTX_PREEXISTED=0
+[ -e "$DRY_CTX" ] && DRY_CTX_PREEXISTED=1
+
 # Reap every worktree this test (or the scripts under test) created before the
 # temp dir goes away, so no stale worktree metadata is left in the sandbox repo
 # and no directory survives the run.
@@ -48,6 +56,8 @@ cleanup_all() {
     git -C "$WIKI_PATH" worktree prune >/dev/null 2>&1 || true
   fi
   rm -rf "$SANDBOX"
+  [ "$DRY_CTX_PREEXISTED" = 0 ] && rm -f "$DRY_CTX"
+  return 0
 }
 trap cleanup_all EXIT
 
@@ -97,16 +107,34 @@ footer() {
   printf '*Compiled from 2 sources: [[summary/alpha]], [[summary/beta]]*\n'
   printf '*Last compiled: 2026-01-01*\n'
 }
-good_page() { printf '# %s\n\nCompiled thesis, revision %s.\n\n' "$base" "${STUB_REV:-1}"; filler; footer; }
+# The cross-links every seeded theme page already carries. wiki-compile REJECTS
+# a compile that drops any of them, so every mode that is meant to fail for some
+# OTHER reason has to reproduce these, or it would fail here first.
+crosslinks() { printf 'It sits beside [[Untouched Page]] and [[Neighbour Page]].\n\n'; }
+good_page() {
+  printf '# %s\n\nCompiled thesis, revision %s.\n\n' "$base" "${STUB_REV:-1}"
+  crosslinks; filler; footer
+}
 
 case "$mode" in
   good)      good_page > "$page" ;;
   nothing)   ;;                      # writes nothing at all; the page survives from BASE
   delete)    rm -f "$page" ;;        # the page genuinely does not exist afterwards
-  short)     { printf '# %s\n\nA stub of a page.\n' "$base"; footer; } > "$page" ;;
+  short)     { printf '# %s\n\nA stub of a page.\n' "$base"; crosslinks; footer; } > "$page" ;;
   conflict)  { printf '# %s\n\n<<<<<<< HEAD\nours\n=======\ntheirs\n>>>>>>> curate/other\n\n' "$base"
+               crosslinks; filler; footer; } > "$page" ;;
+  no-footer) { printf '# %s\n\nCompiled thesis.\n\n' "$base"; crosslinks; filler; } > "$page" ;;
+  # Good prose that quietly strands a page: one of the two cross-links survives,
+  # the other does not.
+  drop-one-link) { printf '# %s\n\nCompiled thesis.\n\n' "$base"
+               printf 'It sits beside [[Untouched Page]].\n\n'; filler; footer; } > "$page" ;;
+  drop-both-links) { printf '# %s\n\nCompiled thesis.\n\n' "$base"; filler; footer; } > "$page" ;;
+  # Links may be MOVED (alias, anchor, different sentence) without being lost —
+  # the gate compares normalised targets, and this is what stops it from being
+  # widened into "the page must contain these literal strings".
+  alias-links) { printf '# %s\n\nCompiled thesis.\n\n' "$base"
+               printf 'Beside [[Untouched Page|the control]] and [[Neighbour Page#top]].\n\n'
                filler; footer; } > "$page" ;;
-  no-footer) { printf '# %s\n\nCompiled thesis.\n\n' "$base"; filler; } > "$page" ;;
   extra)     good_page > "$page"; printf '# Stray\n\nnobody asked for this\n' > "topic/Stray Page.md" ;;
   # The same overreach under a non-ASCII name. git C-quotes such paths in
   # --porcelain output, and the collateral check both excludes and reports by
@@ -157,6 +185,11 @@ done
 # (known bug B) is invisible against a stub fixture page.
 seed_theme() {  # seed_theme <title> <src-a> <src-b>
   { printf '# %s\n\nThe pre-compile version of this page.\n\n' "$1"
+    # Cross-links to other topic pages. A theme page is also a directory, and
+    # wiki-compile rejects a compile that drops any of these — without them in
+    # the fixture the link-preservation gate has nothing to preserve and the
+    # cases below would pass against a compiler that had no gate at all.
+    printf 'It sits beside [[Untouched Page]] and [[Neighbour Page]].\n\n'
     words 300 "orig"; printf '\n\n'
     if [ -n "${3:-}" ]; then
       printf '*Compiled from 2 sources: [[summary/%s]], [[summary/%s]]*\n' "$2" "$3"
@@ -173,6 +206,9 @@ seed_theme "Lonely Theme" gamma                 # one source: must be skipped
 # A control page no case ever compiles. If a compile ever leaks onto the live
 # checkout or into a commit, this is what shows it.
 printf '# Untouched Page\n\nThis page must never change.\n' > "$W/topic/Untouched Page.md"
+# The other end of the seeded cross-links. Real so that the fixture starts with
+# zero dead links and case 7's audit delta is unambiguous.
+printf '# Neighbour Page\n\nThe far end of a cross-link.\n' > "$W/topic/Neighbour Page.md"
 git -C "$W" add -A
 git -C "$W" commit -q -m "Seed the fixture wiki"
 
@@ -382,6 +418,34 @@ gate_case crash     crash        'LLM failed (exit 7)'
 gate_case extraem   extra-emdash 'VALIDATION FAILED — modified other files'
 grep -q 'Stray' "$SANDBOX/all.extraem" \
   || { echo "FAIL: gate/extraem — the stray file is not named in the message: $(cat "$SANDBOX/all.extraem")"; fail=1; }
+
+# Cross-link preservation. A hub page is often the only inbound link a page has,
+# so a compile that drops one strands it — measured at 48 of 104 links on one
+# hub, and orphans 106 -> 114 wiki-wide.
+gate_case droplink  drop-one-link 'cross-link(s)'
+grep -q 'Neighbour Page' "$SANDBOX/all.droplink" \
+  || { echo "FAIL: gate/droplink — the dropped link is not named: $(cat "$SANDBOX/all.droplink")"; fail=1; }
+grep -q 'Untouched Page' "$SANDBOX/all.droplink" \
+  && { echo "FAIL: gate/droplink — a link that was KEPT is reported as dropped"; fail=1; }
+gate_case droplinks drop-both-links 'cross-link(s)'
+
+# KNOWN BUG D — the dropped-link COUNT is one short.
+# `printf '%s' "$LOST" | tr ';' '\n' | wc -l` counts newlines in a string that
+# printf deliberately leaves unterminated, so N dropped links are reported as
+# N-1: one dropped link reads "dropped 0 cross-link(s)". The names are right;
+# only the number is wrong. bin/wiki-compile:223, observed 2026-08-09.
+known_bug "gate/droplink: one dropped link is reported as 'dropped 1'" \
+  "$(grep -q 'dropped 1 cross-link' "$SANDBOX/all.droplink"; echo $?)"
+known_bug "gate/droplinks: two dropped links are reported as 'dropped 2'" \
+  "$(grep -q 'dropped 2 cross-link' "$SANDBOX/all.droplinks"; echo $?)"
+
+# The gate's negative half: links that MOVED — realiased, anchored, resited in
+# the prose — have not been dropped. Without this, the gate could be "the page
+# must still contain these literal strings" and the suite would not notice.
+rm -f "$STUB_WROTE"
+STUB_MODE=alias-links run_compile alias --theme "Test Theme" --branch curate/alias
+check "gate/alias: realiased and anchored links are not 'dropped'" 0 "$RC"
+assert_live_checkout_pristine "gate/alias"
 
 # KNOWN BUG B — "the LLM wrote nothing" is reported as SUCCESS.
 #

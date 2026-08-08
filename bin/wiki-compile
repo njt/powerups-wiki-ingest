@@ -22,6 +22,9 @@
 # Env: WIKI_PATH (required), WIKI_INGEST_CLI (default: claude)
 # Exit: 0 compiled  2 usage/config  3 no sources  4 LLM failed  5 validation failed
 set -euo pipefail
+# `set -e` aborts silently, which makes a failure in a long unattended batch
+# indistinguishable from a mystery. Say where we died and with what.
+trap 'rc=$?; [ "$rc" -eq 0 ] || echo "wiki-compile: aborted at line $LINENO (exit $rc)" >&2' ERR
 
 THEME=""; BRANCH=""; DRY_RUN=0; KEEP=0
 while [ $# -gt 0 ]; do
