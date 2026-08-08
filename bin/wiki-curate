@@ -395,7 +395,8 @@ def cmd_index(v, args):
 
 
 def cmd_audit(v, args):
-    results = [c(v) for c in CHECKS]
+    limit = getattr(args, 'oversized', 2500)
+    results = [(c(v, limit) if c is check_oversized else c(v)) for c in CHECKS]
     if args.json:
         print(json.dumps(
             [{"id": i, "title": t, "count": len(x), "items": x}
@@ -534,6 +535,10 @@ def main(argv=None):
     p.add_argument("--json", action="store_true")
     p.add_argument("--show", type=int, default=5,
                    help="example items per check (default 5)")
+    p.add_argument("--oversized", type=int, default=2500,
+                   help="word count above which a page is a split candidate "
+                        "(default 2500; compiled themes run larger because "
+                        "they carry their own directory section)")
     p.set_defaults(fn=cmd_audit)
 
     p = sub.add_parser("gaps", help="what compiled themes say they are missing")
