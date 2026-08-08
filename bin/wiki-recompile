@@ -1,0 +1,111 @@
+#!/bin/bash
+# wiki-recompile — compile the top themes onto one reviewable branch.
+#
+# Serial by design. There is exactly one writer, one theme at a time, which is
+# the whole point: the merge-conflict class this replaces existed because N
+# ingests mutated shared pages concurrently.
+#
+# Measures itself. It audits the wiki before and after, so the claim "this made
+# the wiki better" is a measurement rather than an opinion.
+#
+# Usage:
+#   wiki-recompile --top 25
+#   wiki-recompile --top 10 --min-sources 5 --branch curate/tonight
+#   wiki-recompile --themes-file list.txt
+#
+# Env: WIKI_PATH (required), WIKI_INGEST_CLI (default: claude)
+set -euo pipefail
+
+TOP=10; MIN_SOURCES=4; BRANCH=""; THEMES_FILE=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --top)          TOP="${2:-}"; shift 2 ;;
+    --min-sources)  MIN_SOURCES="${2:-}"; shift 2 ;;
+    --branch)       BRANCH="${2:-}"; shift 2 ;;
+    --themes-file)  THEMES_FILE="${2:-}"; shift 2 ;;
+    -h|--help)      sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    *) echo "wiki-recompile: unknown argument: $1" >&2; exit 2 ;;
+  esac
+done
+
+[ -n "${WIKI_PATH:-}" ] || { echo "wiki-recompile: WIKI_PATH is not set" >&2; exit 2; }
+HERE="$(dirname "$0")"
+CURATE="$HERE/wiki-curate"; COMPILE="$HERE/wiki-compile"
+[ -x "$CURATE" ] && [ -x "$COMPILE" ] || {
+  echo "wiki-recompile: wiki-curate/wiki-compile not found beside me" >&2; exit 2; }
+[ -n "$BRANCH" ] || BRANCH="curate/compile-$(date +%Y%m%d)"
+
+# --- Choose the work --------------------------------------------------------
+LIST="$(mktemp "${TMPDIR:-/tmp}/wiki-recompile-XXXXXX")"
+trap 'rm -f "$LIST" "$LIST.before" "$LIST.after"' EXIT
+if [ -n "$THEMES_FILE" ]; then
+  grep -v '^[[:space:]]*$' "$THEMES_FILE" > "$LIST"
+else
+  "$CURATE" themes --min "$MIN_SOURCES" --json \
+    | python3 -c '
+import json,sys
+rows=json.load(sys.stdin)
+for r in rows[:int(sys.argv[1])]: print(r["title"])
+' "$TOP" > "$LIST"
+fi
+COUNT=$(wc -l < "$LIST" | tr -d ' ')
+[ "$COUNT" -gt 0 ] || { echo "wiki-recompile: nothing to compile" >&2; exit 3; }
+
+echo "wiki-recompile: $COUNT themes -> branch $BRANCH"
+echo "wiki-recompile: auditing before..."
+"$CURATE" audit --json > "$LIST.before" 2>/dev/null
+
+# --- Compile, serially ------------------------------------------------------
+OK=0; FAILED=0; SKIPPED=0; N=0
+START=$(date +%s)
+while IFS= read -r theme; do
+  [ -n "$theme" ] || continue
+  N=$((N + 1))
+  printf '\n[%d/%d] %s\n' "$N" "$COUNT" "$theme"
+  set +e
+  "$COMPILE" --theme "$theme" --branch "$BRANCH" 2>&1 | sed 's/^/    /'
+  rc=${PIPESTATUS[0]}
+  set -e
+  case "$rc" in
+    0) OK=$((OK + 1)) ;;
+    3) SKIPPED=$((SKIPPED + 1)); echo "    (skipped: too few sources)" ;;
+    *) FAILED=$((FAILED + 1)); echo "    (FAILED rc=$rc — branch unchanged for this theme)" ;;
+  esac
+done < "$LIST"
+ELAPSED=$(( $(date +%s) - START ))
+
+# --- Measure the result -----------------------------------------------------
+echo ""
+echo "wiki-recompile: auditing after..."
+WT="$(mktemp -d "${TMPDIR:-/tmp}/wiki-recompile-audit-XXXXXX")"
+if git -C "$WIKI_PATH" worktree add --quiet "$WT" "$BRANCH" 2>/dev/null; then
+  "$CURATE" --wiki "$WT" audit --json > "$LIST.after" 2>/dev/null || true
+  git -C "$WIKI_PATH" worktree remove --force "$WT" 2>/dev/null || rm -rf "$WT"
+else
+  rm -rf "$WT"; cp "$LIST.before" "$LIST.after"
+fi
+
+echo ""
+echo "================ wiki-recompile ================"
+printf 'compiled %d   skipped %d   failed %d   in %dm%02ds\n' \
+  "$OK" "$SKIPPED" "$FAILED" $((ELAPSED / 60)) $((ELAPSED % 60))
+python3 - "$LIST.before" "$LIST.after" <<'PY'
+import json,sys
+def load(p):
+    try:
+        with open(p) as fh: return {c["id"]:c["count"] for c in json.load(fh)}
+    except Exception: return {}
+b,a=load(sys.argv[1]),load(sys.argv[2])
+if not b or not a:
+    print("  (audit comparison unavailable)"); raise SystemExit
+print(f"\n  {'check':<26}{'before':>8}{'after':>8}{'delta':>8}")
+for k in sorted(set(b) | set(a)):
+    bb,aa=b.get(k,0),a.get(k,0)
+    if bb==aa: continue
+    d=aa-bb
+    print(f"  {k:<26}{bb:>8}{aa:>8}{d:>+8}")
+PY
+echo ""
+echo "review:  git -C \"\$WIKI_PATH\" diff main..$BRANCH --stat"
+echo "adopt:   git -C \"\$WIKI_PATH\" merge $BRANCH        # only when you are happy"
+echo "discard: git -C \"\$WIKI_PATH\" branch -D $BRANCH"
