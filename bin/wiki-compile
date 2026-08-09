@@ -58,6 +58,19 @@ if [ "$N_SRC" -lt 2 ]; then
   echo "wiki-compile: single-source material belongs in summary/, not topic/." >&2
   exit 3
 fi
+# Reconstructed provenance unions the digests of every page a hub links to, so a
+# page with many outbound links inherits an implausible source set -- one page
+# about a single company came out with 188 "sources". Compiling that produces a
+# page claiming an evidence base it does not have.
+MAX_SOURCES="${WIKI_COMPILE_MAX_SOURCES:-120}"
+if [ "$N_SRC" -gt "$MAX_SOURCES" ] && [ "$PROV" = "reconstructed" ]; then
+  echo "wiki-compile: '$THEME' has $N_SRC RECONSTRUCTED sources, over the" >&2
+  echo "wiki-compile: plausibility cap of $MAX_SOURCES. Its provenance is almost" >&2
+  echo "wiki-compile: certainly over-attributed by the link-graph heuristic," >&2
+  echo "wiki-compile: not a genuine theme. Raise WIKI_COMPILE_MAX_SOURCES to" >&2
+  echo "wiki-compile: override." >&2
+  exit 3
+fi
 echo "wiki-compile: $THEME — $N_SRC sources ($PROV provenance)"
 
 # --- Throwaway worktree: the live checkout must never move -------------------
@@ -176,8 +189,9 @@ each on what it covers. Omit this section only if there are none left over.
 
 ---
 
-*Compiled from $N_SRC sources: <list every digest as [[summary/slug]], comma-separated>*
-*Last compiled: $TODAY*
+(Do NOT write a "Compiled from ..." provenance footer. The tool appends it
+from the authoritative source list after you finish. Anything you write there
+will be discarded.)
 
 RULES.
 - PRESERVE EVERY EXISTING LINK. This page is not only an argument, it is
@@ -203,8 +217,40 @@ RC=$?
 set -e
 [ "$RC" -eq 0 ] || { echo "wiki-compile: LLM failed (exit $RC)" >&2; exit 4; }
 
-# --- Validate before committing ---------------------------------------------
+# Did the model write at all? This MUST be asked before the footer is appended,
+# because appending would itself touch the file and mask a dead model.
+if [ -f "$WT/$PAGE_REL" ] && \
+   [ "$(mtime_of "$WT/$PAGE_REL")" = "$PRE_MTIME" ]; then
+  echo "wiki-compile: the model never wrote $PAGE_REL (file untouched)." >&2
+  echo "wiki-compile: treating as failure, not as a no-op." >&2
+  exit 6
+fi
+
+# --- Provenance is written by the tool, never by the model --------------------
+# A 188-source page came back with 117 fabricated [[summary/...]] slugs. The
+# footer is the one part of the page that must be exactly true -- it is what
+# makes the page auditable and rebuildable -- and the script already knows the
+# authoritative list. Asking a model to transcribe 188 identifiers was the
+# error; strip whatever it wrote and append the real thing.
 rm -f "$CTX"
+if [ -f "$WT/$PAGE_REL" ]; then
+  SRC_JSON="$SRC_JSON" PAGE="$WT/$PAGE_REL" TODAY="$TODAY" python3 -c '
+import json, os, re
+src = json.loads(os.environ["SRC_JSON"])["sources"]
+slugs = [os.path.basename(s)[:-3] for s in src]
+p = os.environ["PAGE"]
+t = open(p, encoding="utf-8", errors="replace").read()
+t = re.sub(r"^\*Compiled from .*$", "", t, flags=re.M)
+t = re.sub(r"^\*Last compiled:.*$", "", t, flags=re.M)
+t = t.rstrip()
+# Do not stack a second horizontal rule on one the page already ends with.
+t = re.sub(r"\n-{3,}$", "", t).rstrip()
+t = t + "\n\n---\n\n*Compiled from " + str(len(slugs)) + " sources: " \
+    + ", ".join("[[summary/" + s + "]]" for s in slugs) + "*\n" \
+    + "*Last compiled: " + os.environ["TODAY"] + "*\n"
+open(p, "w", encoding="utf-8").write(t)
+'
+fi
 FAIL=""
 [ -f "$WT/$PAGE_REL" ] || FAIL="page not written"
 if [ -z "$FAIL" ]; then
@@ -273,13 +319,6 @@ fi
 
 git -C "$WT" add -- "$PAGE_REL"
 if git -C "$WT" diff --cached --quiet; then
-  # Untouched file => the model never wrote it. Reporting that as success would
-  # let a dead model look like a clean batch of compiles.
-  if [ "$(mtime_of "$WT/$PAGE_REL")" = "$PRE_MTIME" ]; then
-    echo "wiki-compile: the model never wrote $PAGE_REL (file untouched)." >&2
-    echo "wiki-compile: treating as failure, not as a no-op." >&2
-    exit 6
-  fi
   echo "wiki-compile: no change to $PAGE_REL (already current)"
   exit 0
 fi

@@ -294,11 +294,31 @@ assert "happy: branch curate/happy was created" "$(branch_exists curate/happy; e
 [ -f "$STUB_WROTE" ] \
   || { echo "FAIL: happy — the stub was never invoked"; fail=1; }
 git -C "$W" show "curate/happy:topic/Test Theme.md" > "$SANDBOX/on-branch.md" 2>/dev/null
-if cmp -s "$SANDBOX/on-branch.md" "$STUB_WROTE"; then
-  echo "ok: happy: the page on the branch is byte-identical to what the compiler wrote"
+# The tool appends the authoritative provenance footer itself, so the branch
+# page is the model's output plus that footer -- never byte-identical.
+# The tool strips any model-written footer and appends the authoritative one,
+# so compare the model's body (minus its own footer) rather than raw bytes.
+# Ignore blank lines and horizontal rules: the tool normalises the footer onto
+# the wiki's house page format (rule, then provenance), so a rule may be added.
+prose() { grep -v '^\*Compiled from \|^\*Last compiled:' "$1" \
+          | grep -v '^[[:space:]]*$' | grep -v '^-\{3,\}$'; }
+prose "$STUB_WROTE" > "$SANDBOX/body-want"
+prose "$SANDBOX/on-branch.md" > "$SANDBOX/body-got"
+if cmp -s "$SANDBOX/body-want" "$SANDBOX/body-got"; then
+  echo "ok: happy: the branch page preserves the compiler's prose verbatim"
 else
-  echo "FAIL: happy — the branch page differs from the compiler's output"; fail=1
+  echo "FAIL: happy — the branch page altered the compiler's prose"; fail=1
+  diff "$SANDBOX/body-want" "$SANDBOX/body-got" | head -12 | sed "s/^/      /"
 fi
+foot=$(grep '^\*Compiled from ' "$SANDBOX/on-branch.md")
+[ "$(printf '%s\n' "$foot" | wc -l | tr -d ' ')" = "1" ] \
+  && echo "ok: happy: exactly one tool-written provenance footer" \
+  || { echo "FAIL: happy — expected exactly one footer, got: $foot"; fail=1; }
+case "$foot" in
+  "*Compiled from 2 sources: [[summary/"*"]], [[summary/"*"]]*")
+    echo "ok: happy: the footer names both digests" ;;
+  *) echo "FAIL: happy — footer does not name 2 digests: $foot"; fail=1 ;;
+esac
 [ "$(branch_tip curate/happy)" != "$MAIN_AT_START" ] \
   || { echo "FAIL: happy — the branch ref did not advance past main"; fail=1; }
 [ "$(git -C "$W" rev-parse 'curate/happy^')" = "$MAIN_AT_START" ] \
@@ -405,7 +425,26 @@ gate_case() {  # gate_case <tag> <mode> <expected message fragment>
 gate_case delete    delete       'VALIDATION FAILED — page not written'
 gate_case short     short        'VALIDATION FAILED — page suspiciously short'
 gate_case conflict  conflict     'VALIDATION FAILED — conflict markers in output'
-gate_case nofooter  no-footer    'VALIDATION FAILED — no provenance footer'
+# The no-footer gate is retired: the tool now writes the footer itself, so a
+# model that omits one can no longer produce a footerless page. What replaces
+# it is stronger -- a model that FABRICATES a footer must have it overwritten
+# with the authoritative source list. (A 188-source page once came back with
+# 117 invented [[summary/...]] slugs; that is what this pins.)
+br="curate/footer-authority"
+rm -f "$STUB_WROTE"
+STUB_MODE="no-footer" run_compile footerauth --theme "Test Theme" --branch "$br"
+check "footer: a page whose model wrote no footer still compiles" 0 "$RC"
+git -C "$W" show "$br:topic/Test Theme.md" > "$SANDBOX/fa.md" 2>/dev/null
+fafoot=$(grep '^\*Compiled from ' "$SANDBOX/fa.md")
+case "$fafoot" in
+  "*Compiled from 2 sources: [[summary/"*"]], [[summary/"*"]]*")
+    echo "ok: footer: the tool supplied the authoritative provenance footer" ;;
+  *) echo "FAIL: footer — tool did not append the correct footer: $fafoot"; fail=1 ;;
+esac
+[ "$(grep -c '^\*Compiled from' "$SANDBOX/fa.md")" = "1" ] \
+  && echo "ok: footer: exactly one provenance footer" \
+  || { echo "FAIL: footer — expected exactly one footer, got $(grep -c '^\*Compiled from' "$SANDBOX/fa.md")"; fail=1; }
+assert_live_checkout_pristine "footer"
 gate_case extra     extra        'VALIDATION FAILED — modified other files'
 gate_case extraroot extra-root   'VALIDATION FAILED — modified other files'
 gate_case crash     crash        'LLM failed (exit 7)'
