@@ -433,6 +433,54 @@ def cmd_audit(v, args):
     return 0
 
 
+def _norm_title(s):
+    return re.sub(r"[^a-z0-9 ]", " ", s.lower()).split()
+
+
+def cmd_classify(v, args):
+    """Split single-source pages into entity pages and editorial concepts.
+
+    The signal is deterministic and already in the corpus: compare a page's
+    title with the title of the ONE source it is built from. A page named after
+    its source ("Hunk" <- "Hunk - Diff Viewer") is an ENTITY page -- a thing
+    that exists in the world, legitimately 1:1, and whose factual content
+    duplicates its own digest. A page whose title its source never uses
+    ("Constraint Decay") is a CONCEPT the author coined, and concepts want to be
+    themes: multi-source, argued, compiled.
+
+    This only reports. Deciding what to do with 900-odd pages is not a call a
+    heuristic should make unattended.
+    """
+    ent, con = [], []
+    for p in v.topics():
+        srcs = p["sources"]
+        if len(srcs) != 1:
+            continue
+        d = v.pages.get(srcs[0])
+        stitle = (d["meta"].get("title") if d else "") or ""
+        a, b = set(_norm_title(p["title"])), set(_norm_title(stitle))
+        overlap = len(a & b) / max(1, len(a))
+        row = {"page": p["title"], "source_title": stitle,
+               "overlap": round(overlap, 2), "words": p["words"],
+               "inbound": len(v.inbound.get(p["key"], ()))}
+        (ent if overlap >= args.threshold else con).append(row)
+    ent.sort(key=lambda r: -r["overlap"]); con.sort(key=lambda r: -r["inbound"])
+    if args.json:
+        print(json.dumps({"entity": ent, "concept": con}, indent=2))
+        return 0
+    print(f"ENTITY-LIKE   {len(ent):>4}  named after their source; the factual "
+          f"content duplicates the digest")
+    for r in ent[:args.show]:
+        print(f"    {r['overlap']:.2f}  {r['page']}  <-  {r['source_title'][:44]}")
+    print(f"\nCONCEPT-LIKE  {len(con):>4}  titles the source never uses; these "
+          f"want to become themes")
+    for r in con[:args.show]:
+        print(f"    {r['inbound']:>3} inbound  {r['page']}")
+    print(f"\n{len(ent)+len(con)} single-source pages classified "
+          f"at threshold {args.threshold}.")
+    return 0
+
+
 def cmd_dirty(v, args):
     """Themes a batch of new sources actually touched.
 
@@ -599,6 +647,12 @@ def main(argv=None):
                         "(default 2500; compiled themes run larger because "
                         "they carry their own directory section)")
     p.set_defaults(fn=cmd_audit)
+
+    p = sub.add_parser("classify", help="entity pages vs editorial concepts")
+    p.add_argument("--threshold", type=float, default=0.5)
+    p.add_argument("--show", type=int, default=6)
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(fn=cmd_classify)
 
     p = sub.add_parser("dirty", help="themes whose sources changed since a ref")
     p.add_argument("--since", required=True, metavar="REF")
