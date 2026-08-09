@@ -1,7 +1,7 @@
 ---
 id: ghyj7yz18wnypbvkfa84vq0f
 title: Stop concurrent ingests conflicting on shared topic pages (interim mitigation)
-status: implementation
+status: superseded
 source: kata:87sc (interim mitigation only)
 started: 2026-08-07T14:28:25Z
 completed:
@@ -55,6 +55,31 @@ gates:
                 target-stage: implementation
                 state: consumed
 ---
+
+## SUPERSEDED — 2026-08-09
+
+Do not implement this. It referees a race that no longer exists.
+
+Ingest no longer edits shared topic pages at all (`bin/wiki-ingest-run`, the
+RELATE step): it writes only files it uniquely owns and links OUT from its own
+page, so there is nothing left for two concurrent ingests to contend over.
+Cross-page curation moved to `bin/wiki-compile`, a single writer that rebuilds
+one theme at a time from all of its sources. Verified live-fire against a clone
+of the wiki: a re-ingest touched `log.md`, `raw/`, `summary/` and its own topic
+page, and zero other topic pages.
+
+That removes the need for all three parts of this design — the bounded union
+resolver, the merge-failure classifier, and the `mkdir` mutex whose staleness
+sweep this entity was held at a gate to fix (F1: 18/30 trials admitted two
+holders). The implementation branch `spacedock-ensign/serialise-topic-page-merges`
+is left intact for the record.
+
+What survives from it, because the measurement was good: the finding that a
+lock prevents 0 of 11 observed conflicts, and that unbounded `merge=union` is
+silently wrong on 4 of 11. Both are cited in the replacement design at
+`docs/design/monograph-what-great-looks-like.md`.
+
+Tracked as kata `x0ry`, which supersedes `87sc` and defuses `6ctn`.
 
 ## Problem
 
