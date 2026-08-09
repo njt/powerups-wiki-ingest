@@ -103,11 +103,23 @@ The rule that does most of the work: **a theme page earns existence at two or mo
 ### 4.5 Curator *(new — the missing operation)*
 Not one thing; a small family, ordered from cheap and certain to expensive and judgemental:
 
-- **index** — build the provenance and link graph from the corpus. Deterministic.
-- **audit** — dead links, orphans, duplicate titles, stale counts, hand-edited derived files, digest-less sources. Deterministic. Runs in seconds; should run every night.
-- **route** — assign sources to themes: declared provenance first, retrieval to discover new edges.
-- **compile** — regenerate a theme page from its member digests, pulling full `raw/` only for the sources it quotes in depth. Single writer, one theme at a time.
-- **reconcile** — the model-assisted audit: contradictions, stale temporal claims, themes that have outgrown one page and should split.
+- **index** — build the provenance and link graph from the corpus. Deterministic. *(built: `wiki-curate index`)*
+- **audit** — dead links, orphans, duplicate titles, stale counts, digest-less sources, and **wanted pages**: absent pages several others link to, which is the corpus naming a theme it lacks. Deterministic, sub-second; should run nightly. *(built: `wiki-curate audit`)*
+- **route** — assign sources to themes: declared provenance first, retrieval to discover new edges. *(half built: `wiki-curate dirty --since REF` does the declared-provenance half as set arithmetic. The retrieval half — the new-edge problem — is not built, and the backstop is a periodic full recompile.)*
+- **compile** — regenerate a theme page from its member digests, pulling full `raw/` only for the sources it quotes in depth. Single writer, one theme at a time. *(built: `wiki-compile`, `wiki-recompile`. It reads digests only; the selective `raw/` deep-read is not built.)*
+- **reconcile** — the model-assisted audit: contradictions, stale temporal claims, themes that have outgrown one page and should split. *(not built)*
+
+Two more emerged from use and were not in the original decomposition:
+
+- **classify** — split single-source pages by whether they are named after their
+  source. On the live corpus this turned "922 single-source pages" into 861
+  entity pages (legitimately 1:1) and 61 coined concepts that want to be themes,
+  which is a far more tractable problem than the undifferentiated number.
+  *(built: `wiki-curate classify`)*
+- **review** — render a compile branch as per-page word and link deltas plus the
+  corpus audit delta. Not a nicety: a multi-page compile diff is unreadable, and
+  this is what caught the compiler silently destroying cross-links.
+  *(built: `wiki-review`)*
 
 ### 4.6 Query *(designed for, not built)*
 Retrieval over digests and themes returning provenance-backed answers. Explicitly future work — but two cheap decisions now avoid foreclosing it: keep provenance machine-readable, and compile pages into self-contained sections that survive chunking. Both improve human reading anyway, so they cost nothing.
@@ -210,7 +222,23 @@ Ordered so there is something working and valuable at every stop, and nothing de
 
 1. **`wiki-curate index`** — provenance and link graph, including hub reconstruction. Deterministic, no model, fast.
 2. **`wiki-curate audit`** — health report from that graph. Deterministic. Immediately useful on today's wiki with no changes to anything.
-3. **`wiki-curate compile <theme>`** — recompile one theme from its sources, into a worktree, on a branch. Reviewable as a diff.
+3. **`wiki-compile --theme`** — recompile one theme from its sources, into a worktree, on a branch. Reviewable as a diff.
 4. **Scale to the worst hubs**, measure quality against what is there now, and report.
 
 Steps 1 and 2 change nothing and can run against the live wiki safely. Step 3 writes only inside a scratch worktree on a branch, so `main` — and the Obsidian window that is open on it — never moves until it is chosen.
+
+**All four were built and run on 2026-08-08/09.** Eleven themes were recompiled
+and merged, with every cross-link preserved and corpus health unchanged or
+better. What that exercise taught, beyond the code:
+
+- Compiling improves prose and can silently destroy structure. The first run
+  wrote better pages and dropped 48 of 104 links from one hub. A theme page is
+  also a **directory** — often the only inbound link a page has — and link
+  preservation had to become a mechanical gate, not an instruction.
+- Measure on the filesystem you will actually run against. Audits taken inside a
+  git worktree and against the live iCloud tree disagreed, because macOS stores
+  filenames decomposed and markdown links compose them. That read as a
+  regression from a merge that had changed nothing.
+- The compiled pages roughly doubled in length while referencing exactly the
+  same 455 pages — elaboration, not coverage. No budget pushes back on length,
+  and nothing in the design says how long a theme should be.
