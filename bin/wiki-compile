@@ -222,7 +222,8 @@ fi
 # links from one hub and pushed wiki-wide orphans from 106 to 114.
 if [ -z "$FAIL" ]; then
   LOST=$(WT="$WT" PAGE_REL="$PAGE_REL" WIKI_PATH="$WIKI_PATH" python3 -c '
-import os,re,subprocess
+import os,re,subprocess,unicodedata
+def nfc(x): return unicodedata.normalize("NFC", x)
 LINK=re.compile(r"\[\[([^\]\[]+?)\]\]")
 FENCE=re.compile(r"^```.*?^```",re.M|re.S); INLINE=re.compile(r"`[^`\n]*`")
 def links(t):
@@ -245,8 +246,8 @@ lost=sorted(links(old)-links(new))
 titles=set()
 for d,_,fs in os.walk(wt):
     if ".git" in d.split(os.sep): continue
-    titles.update(f[:-3] for f in fs if f.endswith(".md"))
-added=links(new)-links(old)
+    titles.update(nfc(f[:-3]) for f in fs if f.endswith(".md"))
+added={nfc(a) for a in links(new)-links(old)}
 trunc=sorted(a for a in added
              if a not in titles and any(t != a and t.startswith(a) for t in titles))
 parts=[]

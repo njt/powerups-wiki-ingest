@@ -21,7 +21,21 @@ import json
 import os
 import re
 import sys
+import unicodedata
 from collections import defaultdict
+
+
+def nfc(s):
+    """Normalise to composed form.
+
+    macOS and iCloud store filenames decomposed (NFD), while markdown written by
+    an editor or a model is composed (NFC): `topic/Vibe Maths and the Erdős
+    Breakthrough.md` is `Erdős` on disk and `Erdős` in every link to
+    it. Obsidian resolves that; comparing raw bytes does not, and the whole
+    corpus of accented titles reads as dead links and orphans on the live
+    filesystem while looking clean inside a git worktree.
+    """
+    return unicodedata.normalize("NFC", s)
 
 # [[Target]], [[Target|alias]], [[Target#anchor]], [[dir/Target]]
 WIKILINK = re.compile(r"\[\[([^\]\[]+?)\]\]")
@@ -128,7 +142,7 @@ class Vault:
                 if not fn.endswith(".md"):
                     continue
                 full = os.path.join(dirpath, fn)
-                rel = os.path.relpath(full, self.wiki)
+                rel = nfc(os.path.relpath(full, self.wiki))
                 key = rel[:-3]                      # drop .md
                 base = os.path.basename(key)
                 self.by_basename[base].append(key)
@@ -154,6 +168,7 @@ class Vault:
 
     def resolve(self, target):
         """Resolve a wikilink target to a vault key, or None."""
+        target = nfc(target)
         if target in self.by_basename:
             hits = self.by_basename[target]
             return hits[0] if len(hits) == 1 else min(hits, key=_rank)
