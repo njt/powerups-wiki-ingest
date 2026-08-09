@@ -11,9 +11,10 @@ A Claude Code plugin that ingests URLs into an Obsidian wiki.
   - `wiki-ingest-dupcheck` — deterministic duplicate detection; scans `raw/` and `summary/`.
   - `wiki-ingest-backfill` — re-archives URLs recorded in `ingest-queue.md`.
   - `wiki-ingest-setup` — one-time wiki bootstrap.
-  - `wiki-curate` — Python 3, stdlib only. Read-only corpus index + health audit; never writes to the wiki. Subcommands: `index`, `audit`, `themes`, `sources`.
+  - `wiki-curate` — Python 3, stdlib only. Read-only corpus index + health audit; never writes to the wiki. Subcommands: `index`, `audit`, `themes`, `sources`, `dirty` (what a batch touched), `classify` (entity vs concept), `gaps`, `fixme`. Filenames are NFC-normalised before resolving links: macOS/iCloud store them decomposed and markdown links compose them, so raw comparison silently reports accented titles as dead links.
   - `wiki-compile` — rebuilds ONE topic page from all its sources. Detached worktree, commits to a branch, moves the branch ref afterwards; never checks the branch out (that broke a whole batch run once) and never merges.
-  - `wiki-recompile` — drives `wiki-compile` over the top themes serially, auditing before and after.
+  - `wiki-recompile` — drives `wiki-compile` serially, auditing before and after. `--since REF` selects only the themes a batch touched; `--top` caps it.
+  - `wiki-review` — renders a compile branch as a review report (per-page word/link deltas, dropped links, corpus audit delta). Built because a multi-page compile diff is otherwise unreviewable — it is what caught the compiler destroying cross-links.
 - `assets/wiki-CLAUDE.md` — the schema template seeded into a new wiki.
 - `tests/` — `test-fetch.sh` (extraction, fixture-based, no network) and `test-guard.sh` (completeness guard + `--summary-only`, against a throwaway wiki with a stubbed `WIKI_INGEST_CLI`).
 

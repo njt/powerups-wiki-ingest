@@ -29,14 +29,26 @@ because a pass that has read one document can only ever append to a shared page 
 it cannot revise a claim that rests on forty sources.
 
 ```bash
-wiki-curate index                 # provenance and link graph
-wiki-curate audit                 # 12 deterministic health checks
-wiki-curate themes --min 4        # pages ranked by how many sources back them
-wiki-curate sources --theme "X"   # the source set for one theme
+wiki-curate index                    # provenance and link graph
+wiki-curate audit                    # 13 deterministic health checks
+wiki-curate themes --min 4           # pages ranked by how many sources back them
+wiki-curate sources --theme "X"      # the source set for one theme
+wiki-curate dirty --since HEAD~20    # themes a batch of new sources touched
+wiki-curate classify                 # entity pages vs coined concepts
+wiki-curate gaps                     # every page's "What's Missing", collected
+wiki-curate fixme                    # pending %%fix: ...%% notes you left while reading
 
-wiki-compile --theme "X"          # rebuild one theme from ALL its sources
-wiki-recompile --top 25           # rebuild the top themes onto one branch
+wiki-compile --theme "X"             # rebuild one theme from ALL its sources
+wiki-recompile --since HEAD~20 --top 8   # recompile only what the batch touched
+wiki-review --branch curate/...      # render a compile branch as a report
 ```
+
+The everyday loop is two commands: ingest a batch, then
+`wiki-recompile --since <ref-before-the-batch>`. A theme is dirty when its own
+declared source set intersects the digests that changed — set arithmetic over
+provenance, no model and no retrieval. Its blind spot is a source belonging to a
+theme nobody has declared yet; the backstop for that is an occasional full
+recompile, not a cleverer diff.
 
 `wiki-curate` is read-only, deterministic, and needs no LLM or network — under a
 second across a thousand-page wiki, so it is cheap enough to run nightly. It
