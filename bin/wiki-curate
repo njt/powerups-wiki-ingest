@@ -433,6 +433,50 @@ def cmd_audit(v, args):
     return 0
 
 
+def cmd_dirty(v, args):
+    """Themes a batch of new sources actually touched.
+
+    The join between the two halves of the design. Recompiling "the top N"
+    after an ingest is a guess; a theme is dirty when its own declared source
+    set intersects the digests that changed. Set arithmetic over provenance --
+    no model, no retrieval, no guessing.
+
+    The blind spot is honest and unavoidable here: a source belonging to a theme
+    nobody has declared yet is invisible to this, because the edge does not
+    exist. That is the new-edge problem, and the backstop is an occasional full
+    recompile rather than a cleverer diff.
+    """
+    import subprocess
+    r = subprocess.run(["git", "-C", v.wiki, "diff", "--name-only",
+                        f"{args.since}..HEAD", "--", "summary/"],
+                       capture_output=True, text=True)
+    if r.returncode != 0:
+        die(f"git diff {args.since}..HEAD failed: {r.stderr.strip()}", 4)
+    changed = {nfc(l)[:-3] for l in r.stdout.split("\n")
+               if l.strip().endswith(".md")}
+    if not changed:
+        if not args.json:
+            print(f"No digests changed since {args.since}.")
+        else:
+            print("[]")
+        return 0
+    rows = []
+    for p in v.topics():
+        hit = sorted(set(v.provenance(p)) & changed)
+        if len(hit) and len(v.provenance(p)) >= args.min:
+            rows.append({"theme": p["title"], "sources": len(v.provenance(p)),
+                         "changed": len(hit)})
+    rows.sort(key=lambda x: (-x["changed"], -x["sources"]))
+    if args.json:
+        print(json.dumps(rows, indent=2))
+        return 0
+    for x in rows:
+        print(x["theme"])
+    print(f"\n{len(changed)} digest(s) changed; {len(rows)} theme(s) dirty.",
+          file=sys.stderr)
+    return 0
+
+
 def cmd_gaps(v, args):
     """Harvest every compiled page's "What's Missing" section.
 
@@ -555,6 +599,13 @@ def main(argv=None):
                         "(default 2500; compiled themes run larger because "
                         "they carry their own directory section)")
     p.set_defaults(fn=cmd_audit)
+
+    p = sub.add_parser("dirty", help="themes whose sources changed since a ref")
+    p.add_argument("--since", required=True, metavar="REF")
+    p.add_argument("--min", type=int, default=2,
+                   help="minimum total sources for a theme (default 2)")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(fn=cmd_dirty)
 
     p = sub.add_parser("gaps", help="what compiled themes say they are missing")
     p.add_argument("--json", action="store_true")
