@@ -174,7 +174,16 @@ The hubs cannot simply be recompiled, because nobody recorded what they were bui
 
 > **A hub's source set ≈ the union of the digests of the pages it links to.**
 
-Deterministic. No model required. That gives every hub a reconstructed bibliography, which is enough to (a) audit it — do its claims survive contact with its sources? — and (b) recompile it for the first time.
+Deterministic. No model required.
+
+**Correction, 2026-08-10 — this works for auditing and fails for compiling.**
+In a densely-linked wiki the union explodes: a page about one company came out
+with 188 "sources", another with 269. It is a fair answer to "roughly what does
+this page rest on" and a wrong answer to "compile from exactly these", and the
+pages a post-batch dirty-set surfaces are precisely the densely-linked ones. A
+compile against 188 reconstructed sources produced a footer with 117 fabricated
+digest names. Mitigated with a plausibility cap and by having the tool write the
+provenance footer itself; the heuristic still needs replacing. See kata `3h0h`. That gives every hub a reconstructed bibliography, which is enough to (a) audit it — do its claims survive contact with its sources? — and (b) recompile it for the first time.
 
 The 709 single-source pages need classification, not deletion: entity pages keep their identity and get slimmed toward routing; concept pages fold their argument into the theme they belong to. Deleting them wholesale would be destructive and would throw away real writing; the compiler should absorb them.
 
