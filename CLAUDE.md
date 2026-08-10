@@ -32,6 +32,25 @@ Never point `WIKI_PATH` at a real wiki when testing.
 - Command markdown must NOT contain `$0`–`$9` anywhere in its body, fenced code included. Claude Code replaces them with the user's arguments before the agent ever sees the text — 0-based, so `$2` becomes the *third* URL and silently rewrites the snippet into something that no longer runs. Out-of-range indices survive, so a short invocation hides it. In shell examples reach for `$NF`, or `$k` with `awk -v k=2`, or a form that does not start with `$`.
 - The LLM runs with `--allowedTools` as a real guardrail — do not add `--dangerously-skip-permissions` to the default path.
 
+## Merging compile cycles
+
+Nat's standing decision (2026-08-10): **merge a compile cycle without asking
+when `wiki-review` comes back clean.** Clean means all three:
+
+- zero cross-links dropped on every page,
+- no `dead-links` increase in the corpus audit delta,
+- no `orphans` increase.
+
+Anything else — a dropped link, new dead links, a validation rejection, or a
+page whose provenance looks over-attributed — stop and show him the review
+instead. Growth in `oversized` is expected and is not a reason to stop; he has
+accepted that compiled pages roughly double.
+
+Always run `wiki-review` before merging. It is the only thing that has caught
+the two real regressions so far (the compiler destroying 48 cross-links, and a
+page fabricating 117 provenance slugs), and a compile diff is unreviewable by
+eye.
+
 ## Releasing
 
 Bump `version` in `.claude-plugin/plugin.json` and `.claude-plugin/marketplace.json`, then update the entry in `powerups-marketplace`.
