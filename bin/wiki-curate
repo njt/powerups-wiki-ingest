@@ -219,10 +219,17 @@ class Vault:
             if p["kind"] != "topic" or p["sources"]:
                 p["recon_sources"] = []
                 continue
+            # BOUNDED to single-source neighbours. A page built from one source
+            # effectively IS that source, so linking to it cites the source. A
+            # multi-source page is a theme, and linking to a theme does not cite
+            # the theme's whole bibliography -- inheriting it transitively is
+            # what made one company's page claim 269 sources. Measured on the
+            # live corpus: median reconstructed set 59 -> 8, and the 14 hubs
+            # above the plausibility cap drop to 0.
             recon = set()
             for r in p["resolved"]:
                 nb = self.pages.get(r)
-                if nb:
+                if nb and len(nb["sources"]) == 1:
                     recon.update(nb["sources"])
             p["recon_sources"] = sorted(recon)
 

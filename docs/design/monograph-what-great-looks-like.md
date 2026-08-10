@@ -77,7 +77,7 @@ Great is not a feature list. It is a small set of properties that, once held, ma
 
 ## 4. Functional decomposition
 
-Six elements. Three are new; three already exist and mostly work.
+Six elements as first drafted. One of them — `facts/` — was scrapped on measurement; it is kept below with the reasoning so the idea is not rediscovered.
 
 ### 4.1 Archive — `raw/` *(exists, keep)*
 Verbatim extracted source. Immutable, append-only, one file per source. Written by the script, never by a model. The trust anchor: every downstream claim can be checked against it.
@@ -87,10 +87,30 @@ A source-faithful precis. One per source, no cross-references, no opinions, no o
 
 Its lossiness sets a ceiling on every topic page compiled from it, so it deserves to be designed for that job — dense, factual, and quotable, with the *specific* details (numbers, names, claims) preserved rather than smoothed away.
 
-### 4.3 Facts — `facts/<slug>.json` *(new)*
-Structured extraction per source: entities mentioned, themes, claims with confidence, and proposed relations. Machine-readable, append-only, one file per source — therefore **zero contention by construction**.
+### 4.3 Facts — `facts/<slug>.json` *(SCRAPPED, 2026-08-10)*
+Proposed as structured per-source extraction — entities, themes, claims,
+relations — to drive routing and contradiction detection. **Not built, and the
+idea is withdrawn rather than deferred.**
 
-This is the element that converts routing and dirty-set computation from model guesswork into set arithmetic. It is also the substrate for contradiction detection: two claims about the same entity that cannot both be true are findable when claims are structured, and effectively unfindable when they are prose buried in 1,017 documents.
+Routing, its main justification, turned out not to need it: `wiki-curate dirty
+--since` computes the dirty set by intersecting declared provenance, and
+bounding the reconstruction to single-source neighbours fixed the
+over-attribution that remained. Both are set arithmetic over data the corpus
+already carries.
+
+It is also not a step toward retrieval, which is the other reason it looked
+worth having. Retrieval wants chunks, embeddings and provenance; the digests are
+already chunk-shaped and provenance now exists. `facts/` would be a separate
+index for a different question — what the corpus *claims*, and whether anything
+contradicts it — sharing no substrate with a retrieval layer.
+
+That leaves contradiction detection as its only live use, which is speculative:
+no contradiction has actually been found in this corpus, only predicted. The
+cost is real and recurring — ~1,020 extractions, one per future source, and a
+full re-extraction on every schema change. Build it if and when a question gets
+a confidently *wrong* answer rather than a thin one, and try the deterministic
+version first: pages whose provenance overlaps heavily but whose conclusions
+diverge are findable without a new artifact.
 
 ### 4.4 Themes and Entities — `topic/` *(exists, re-found)*
 Topic pages split into two kinds with different rules, which resolves the "why are there two files for Hunk" confusion at its root:
