@@ -24,7 +24,12 @@ INLINE_CODE = re.compile(r"`[^`\n]*`")
 
 
 def git(wiki, *args):
-    r = subprocess.run(["git", "-C", wiki] + list(args),
+    # core.quotePath=false: git otherwise C-quotes any path with a non-ASCII
+    # byte, so "topic/Laura Tacho \342\200\224 Data vs Hype.md" comes back
+    # unusable and the page is SILENTLY dropped from the review. About 80 of
+    # this wiki's titles contain an em-dash; a review that quietly ignores them
+    # is worse than no review, because it is trusted.
+    r = subprocess.run(["git", "-C", wiki, "-c", "core.quotePath=false"] + list(args),
                        capture_output=True, text=True)
     return r.stdout if r.returncode == 0 else ""
 
