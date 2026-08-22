@@ -1,11 +1,11 @@
 ---
 id: 6a5wjaf19gdem9ca30m9b0cc
 title: Worktree-cleanup self-exclusion guard never fires on macOS (/tmp and $TMPDIR are symlinks)
-status: validation
+status: done
 source: kata:1dvt
 started: 2026-08-22T13:48:45Z
-completed:
-verdict:
+completed: 2026-08-22T15:15:09Z
+verdict: PASSED
 score: 0.4
 worktree: .worktrees/spacedock-ensign-resolve-tmp-symlink-in-worktree-cleanup-guards
 issue:
@@ -73,7 +73,8 @@ gates:
                 reason: 'Captain approved in chat. All three ACs PASS red-then-green under a fresh validator''s own commands, not inherited: AC-1 attempted-removal counts 1/0 green against 2/1 red with the decisive xtrace inside cleanup_all; AC-2 repro exit 0 and zero leaked dirs against 128 and 1; AC-3 all four suites green with the falsifying edit exercised for real. Scope held to three functional lines at three sites, 19/3, no test case added and no bin/ change. Deviation from the approved literal ACCEPTED on end-to-end evidence: the approved form returns rc 0 and continues under set -eu while setting SANDBOX to the caller''s cwd, destroying a canary in a sacrificial directory; the shipped chained form leaves it intact. Path B residual disproven by measuring both arms under EACCES and ENOENT. Two findings, both declined under prior FO authorization: AC-1''s Verified-by recipe does not discriminate (Deferred risk, recorded with its promote-to-material condition; the validator proved AC-1''s claim by a stronger positive probe instead), and dead HOLDER_REAL/W_REAL redundancy (Polish).'
               application:
                 target-stage: done
-                state: pending
+                state: consumed
+archived: 2026-08-22T15:15:09Z
 ---
 
 ## Problem
