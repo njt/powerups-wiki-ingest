@@ -1,7 +1,8 @@
 ---
 name: wiki-ingest
 description: Ingest a URL or GitHub repo into an Obsidian wiki — fetches the source, analyzes it with an LLM CLI, and files a cross-linked page (raw/summary/topic tiers) with index + append-only log updates. Use when the user asks to ingest, clip, or file a web page or GitHub repo into their wiki, or to backfill a missing summary. Handles duplicate detection, repo deep-analysis, batch ingestion, and a browser fallback for JS-heavy/unfetchable pages.
-allowed-tools: bash read
+argument-hint: <url> [url ...]
+allowed-tools: Bash, Read
 ---
 
 # wiki-ingest — Ingest a source into the Obsidian wiki
@@ -134,14 +135,18 @@ timeout 600 wiki-ingest-run --repo "<github-url>"    # repo deep-analysis
 
 ### Batch ingestion (multiple URLs)
 
-Pi has no `run_in_background` flag, but you can run bash calls concurrently by
-emitting **one `bash` tool call per URL in a single response block** — pi
-executes tool calls in the same block in parallel. Do that: one
-`timeout 600 wiki-ingest-run "<url>"` per URL, all in one response.
+One `timeout 600 wiki-ingest-run "<url>"` per URL, run concurrently. How you get
+that concurrency depends on the host:
 
-This is safe by design: each ingest gets its own git worktree, merges retry on
-lock contention, and `merge=union` on `index.md`/`log.md` prevents content
-conflicts.
+- **Host supports backgrounded bash calls (Claude Code)** — launch each URL as a
+  **separate background Bash call**: one `Bash(run_in_background=true)` per URL.
+  Wait for all the background tasks before moving on.
+- **Host does not (pi)** — emit **one `bash` tool call per URL in a single
+  response block**; pi executes tool calls in the same block in parallel.
+
+Either way this is safe by design: each ingest gets its own git worktree, merges
+retry on lock contention, and `merge=union` on `index.md`/`log.md` prevents
+content conflicts.
 
 Do NOT write a monolithic batch script with URL arrays, parallel subshells, and
 a shared wait/merge loop — that path has burned the upstream plugin before (bash
