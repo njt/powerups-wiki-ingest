@@ -175,8 +175,7 @@ This cannot be made *fully* correct without the rearchitecture, and it should no
 
 Committed, self-contained, offline, and deterministic — run three times, identical result each time:
 
-    BIN=/Users/gnat/Source/Powerups/powerups-wiki-ingest/bin \
-      docs/bug-fixes/serialise-topic-page-merges/repro/repro-topic-conflict.sh
+    docs/bug-fixes/serialise-topic-page-merges/repro/repro-topic-conflict.sh
 
 Today it prints `REPRODUCED: ingest B failed to merge (exit 1)` and exits 0 (0 = bug present). Its output shows the five identical `CONFLICT (content): Merge conflict in topic/Shared Topic.md` lines, `MERGE FAILED after 5 attempts`, one of the two synthesis paragraphs on main instead of two, and the losing branch kept.
 

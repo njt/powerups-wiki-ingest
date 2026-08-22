@@ -9,7 +9,7 @@
 # Exits 0 if the conflict reproduced (i.e. the bug is present).
 
 set -u
-BIN="${BIN:?set BIN to the plugin bin/ directory}"
+BIN="${BIN:-$(git -C "$(dirname "$0")" rev-parse --show-toplevel)/bin}"
 SELF="$(cd "$(dirname "$0")" && pwd)"
 
 WIKI=$(mktemp -d /tmp/wiki-repro-XXXXXX)
