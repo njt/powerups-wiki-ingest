@@ -11,6 +11,18 @@ worktree:
 issue:
 pr:
 mod-block:
+gates:
+    version: 1
+    records:
+        - id: gate:6a5wjaf19gdem9ca30m9b0cc:backlog
+          stage: backlog
+          attempts:
+            - id: gate-attempt:6a5wjaf19gdem9ca30m9b0cc-backlog-1
+              briefing:
+                id: briefing:6a5wjaf19gdem9ca30m9b0cc:backlog:attempt-1:revision-1
+                digest: sha256:fbd69c4da99dbe7fc2cedb3ec2ec90524463884b6a02f71ecaa5c7acbc21b38d
+                request-digest: sha256:a79e47f43da6ef1ac608e454a865245daf69801f3597fba7ffd94181e5503890
+                room-ref: ./resolve-tmp-symlink-in-worktree-cleanup-guards/review/backlog/briefing-1
 ---
 
 ## Problem
