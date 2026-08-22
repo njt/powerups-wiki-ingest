@@ -72,7 +72,13 @@ That removes the need for all three parts of this design — the bounded union
 resolver, the merge-failure classifier, and the `mkdir` mutex whose staleness
 sweep this entity was held at a gate to fix (F1: 18/30 trials admitted two
 holders). The implementation branch `spacedock-ensign/serialise-topic-page-merges`
-is left intact for the record.
+was deleted on 2026-08-23 at the Captain's direction, the design it implemented
+being superseded: 8 commits, 886 insertions across `bin/wiki-ingest-run`
+(~316 lines of resolver and classifier) and `tests/test-guard.sh` (~353 lines
+of cases). It was never pushed to origin, so its tip commit
+`a6b8ec1e6985a8beea9d19afd2603725ab1a83c4` survives only in the local reflog,
+for roughly 90 days from deletion; until then `git branch <name> a6b8ec1`
+brings it back.
 
 What survives from it, because the measurement was good: the finding that a
 lock prevents 0 of 11 observed conflicts, and that unbounded `merge=union` is
