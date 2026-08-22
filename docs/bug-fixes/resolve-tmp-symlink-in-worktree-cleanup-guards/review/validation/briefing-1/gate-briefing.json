@@ -1,0 +1,24 @@
+{
+  "type": "Briefing",
+  "version": "1",
+  "id": "briefing:6a5wjaf19gdem9ca30m9b0cc:validation:attempt-1:revision-1",
+  "question": "Does this fix pass validation and go terminal (merge to main)?",
+  "artifacts": [
+    {
+      "id": "artifact:6a5wjaf19gdem9ca30m9b0cc:validation:attempt-1:revision-1:item-1",
+      "uri": "git-root://main/8eba52fafee2c5d026f654289101e99ed4e7a8ed/docs/bug-fixes/_gates/6a-validation.md",
+      "rev": "sha256:3dd0b365e912a8a890beca7bd0521688ef4379eb7848345410533cdd4b1c5472",
+      "mediaType": "text/markdown",
+      "summary": "All three ACs PASS red-then-green under a fresh validator's own commands. One Deferred-risk finding: AC-1's recipe does not discriminate — the validator proved AC-1's claim by a stronger probe instead. Both findings declined under FO authorization. Recommend PASSED."
+    }
+  ],
+  "context": [
+    {
+      "type": "Reference",
+      "id": "reference:6a5wjaf19gdem9ca30m9b0cc:validation:attempt-1:revision-1:item-2",
+      "uri": "git-root://main/8eba52fafee2c5d026f654289101e99ed4e7a8ed/docs/bug-fixes/resolve-tmp-symlink-in-worktree-cleanup-guards.md",
+      "mediaType": "text/markdown",
+      "rev": "sha256:4ecfaa80f5c22d47a156267d5cef989cc0e3fcd9679f8ed4ffcc1b3b37e9bf2d"
+    }
+  ]
+}

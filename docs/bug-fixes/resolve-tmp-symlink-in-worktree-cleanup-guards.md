@@ -54,6 +54,15 @@ gates:
               application:
                 target-stage: implementation
                 state: consumed
+        - id: gate:6a5wjaf19gdem9ca30m9b0cc:validation
+          stage: validation
+          attempts:
+            - id: gate-attempt:6a5wjaf19gdem9ca30m9b0cc-validation-1
+              briefing:
+                id: briefing:6a5wjaf19gdem9ca30m9b0cc:validation:attempt-1:revision-1
+                digest: sha256:5df585d6d14fe2ad14effbd088ddaa6694a065be33dd5f3d74d246159ec84654
+                request-digest: sha256:0e1595428d88a9a20b35b25ea8304daa52d821b3c5114d93f684ed479ea0665e
+                room-ref: ./resolve-tmp-symlink-in-worktree-cleanup-guards/review/validation/briefing-1
 ---
 
 ## Problem
