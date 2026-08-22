@@ -2,7 +2,7 @@
 id: 6a5wjaf19gdem9ca30m9b0cc
 title: Worktree-cleanup self-exclusion guard never fires on macOS (/tmp and $TMPDIR are symlinks)
 status: backlog
-source: found during a pre-push audit, 2026-08-22
+source: kata:1dvt
 started:
 completed:
 verdict:
