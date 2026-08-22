@@ -34,6 +34,15 @@ gates:
               application:
                 target-stage: ideation
                 state: consumed
+        - id: gate:6a5wjaf19gdem9ca30m9b0cc:ideation
+          stage: ideation
+          attempts:
+            - id: gate-attempt:6a5wjaf19gdem9ca30m9b0cc-ideation-1
+              briefing:
+                id: briefing:6a5wjaf19gdem9ca30m9b0cc:ideation:attempt-1:revision-1
+                digest: sha256:0e7c02db3cbaf9baf59492e1f6c63e66b9be3f5c35bc8f84a8b635135ce97cd7
+                request-digest: sha256:d1eb8c6ba45114f959f8464b137606633b65703b031e4fca6199e9cf2797e70e
+                room-ref: ./resolve-tmp-symlink-in-worktree-cleanup-guards/review/ideation/briefing-1
 ---
 
 ## Problem

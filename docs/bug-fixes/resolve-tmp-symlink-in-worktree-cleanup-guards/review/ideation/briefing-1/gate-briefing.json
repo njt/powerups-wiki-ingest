@@ -1,0 +1,38 @@
+{
+  "type": "Briefing",
+  "version": "1",
+  "id": "briefing:6a5wjaf19gdem9ca30m9b0cc:ideation:attempt-1:revision-1",
+  "question": "Does this fix advance from ideation to implementation?",
+  "artifacts": [
+    {
+      "id": "artifact:6a5wjaf19gdem9ca30m9b0cc:ideation:attempt-1:revision-1:item-1",
+      "uri": "git-root://main/91355f42301a177b1936578b5cbc991344d741a3/docs/bug-fixes/_gates/6a-ideation.md",
+      "rev": "sha256:8a248ec97b453e38ae32d399d9f190a46b68189eb1161bc11052c3bd42a3cd01",
+      "mediaType": "text/markdown",
+      "summary": "Proportionality risk dissolved on measurement: bash -x is already the tracer, so AC-1 stands unnarrowed with zero new code and no test-file changes. Red run watched on all three ACs. Recommend advance."
+    }
+  ],
+  "context": [
+    {
+      "type": "Reference",
+      "id": "reference:6a5wjaf19gdem9ca30m9b0cc:ideation:attempt-1:revision-1:item-2",
+      "uri": "git-root://main/91355f42301a177b1936578b5cbc991344d741a3/docs/bug-fixes/resolve-tmp-symlink-in-worktree-cleanup-guards.md",
+      "mediaType": "text/markdown",
+      "rev": "sha256:554684728b7146d836af2a1aa859197a58e8b614e24eca19a78909633b4f89de"
+    },
+    {
+      "type": "Reference",
+      "id": "reference:6a5wjaf19gdem9ca30m9b0cc:ideation:attempt-1:revision-1:item-3",
+      "uri": "git-root://main/91355f42301a177b1936578b5cbc991344d741a3/tests/test-compile.sh",
+      "mediaType": "application/octet-stream",
+      "rev": "sha256:36550b93b077758ad7f8c740d44926e7e7b6fdaeb649fc5a136ed1dba96001d2"
+    },
+    {
+      "type": "Reference",
+      "id": "reference:6a5wjaf19gdem9ca30m9b0cc:ideation:attempt-1:revision-1:item-4",
+      "uri": "git-root://main/91355f42301a177b1936578b5cbc991344d741a3/tests/test-guard.sh",
+      "mediaType": "application/octet-stream",
+      "rev": "sha256:06172470e50e23071025642632af0a45921903137ea8b96f3854bb76ce9353ed"
+    }
+  ]
+}
