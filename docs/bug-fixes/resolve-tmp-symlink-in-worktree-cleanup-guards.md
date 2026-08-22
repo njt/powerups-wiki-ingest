@@ -310,3 +310,42 @@ affected: `bin/wiki-compile:82`, `bin/wiki-recompile:92` and
 `bin/wiki-ingest-run:307,309` remove worktrees by the path they created, never
 by one read back from `git worktree list`, so the defect is confined to the
 three cited sites. Implementation is three creation lines and no test edits.
+
+## Stage Report: implementation
+
+- DONE: The three creation lines changed to resolve through `pwd -P`, and AC-1's before/after re-established as your own measurement — not inherited from the ideation report. Watch each number move: test-compile 2 to 1, test-guard 1 to 0, and confirm the surviving test-compile attempt names holder-worktree and not the sandbox's own root.
+  Commit d0e3ea0. Re-measured here, not inherited: `bash -x tests/test-compile.sh 2>&1 | grep -c -- 'worktree remove --force'` gave **2** at HEAD and **1** after; test-guard.sh gave **1** and **0**. The surviving compile attempt is `.../wiki-compile-test.fQrLgJ/holder-worktree` — the genuine sibling, not `$WIKI_PATH`. The red trace showed both faults in one line: `-C` path `/var/...T//`, target path `/private/var/...`. Reverting either `pwd -P` restores that suite's count and puts the main worktree back in the trace.
+- DONE: AC-2 proven in both halves: the repro exits 0 AND leaves no /tmp/wiki-repro-* behind. Today it is exit 128 with one leaked directory; the leak is the only place this guard's behaviour reaches the end state, so do not let it pass on the exit code alone.
+  Both halves measured. Red: `exit=128`, leak count `1` (`/tmp/wiki-repro-2HMIBS` survived and was removed by hand). Green: `exit=0`, leak count `0`. Both runs still print `REPRODUCED: ingest B failed to merge (exit 1)`, so the repro still reproduces — only its own cleanup changed. Reverting the `pwd -P` returns exit to 128 and the leak to 1.
+- DONE: All four suites green — test-fetch, test-guard, test-curate, test-compile — with nothing left under $TMPDIR afterwards.
+  All four exit 0 and print `ALL PASS` against the committed code; `ls -d "$TMPDIR"/wiki-*-test.*` afterwards matches nothing. Each suite's own cases are what would fail if the `SANDBOX` assignment broke: an empty `SANDBOX` puts `WIKI_PATH` at `/wiki`, and every case that writes to the sandbox wiki goes red.
+
+### Deviation from the approved one-liner — for the gate to rule on
+
+The design's literal form is `SANDBOX=$(cd "$(mktemp -d ...)" && pwd -P)`. I
+shipped `SANDBOX=$(mktemp -d ...) && SANDBOX=$(cd "$SANDBOX" && pwd -P)`
+instead — same one line per site, same three sites, same resolution.
+
+Reason, measured on bash 3.2.57: **`cd ""` succeeds and leaves you in the cwd.**
+`bash -c 'X=$(cd "$(false; echo -n)" && pwd -P); echo "[$X]"'` prints the current
+directory, not the empty string. So under the literal form, a failed `mktemp -d`
+(full disk, unwritable `$TMPDIR`) would set `SANDBOX` to the caller's directory
+and the EXIT trap's `rm -rf "$SANDBOX"` would delete the repo checkout the tests
+were run from. `mktemp` exits 1 on failure, so chaining off it keeps the
+pre-existing harmless behaviour: `SANDBOX=""`, `rm -rf ""` a no-op, suite red.
+Verified both branches directly.
+
+### Summary
+
+Three sandbox-creation lines now resolve through `pwd -P`, so the path the
+script holds matches byte-for-byte what `git worktree list --porcelain` hands
+back and the self-exclusion guard finally reaches its `continue`. No test file
+gained a case, no `tests/lib` was created, nothing in `bin/` was touched; the
+diff is 3 files, 19 insertions, 3 deletions, the extra lines being the comment
+at each site explaining why the resolution is there and why it is two steps.
+
+Every number in this report is a measurement taken in this stage against this
+worktree, red then green, not carried over from ideation. The one judgement call
+is the deviation above: the approved form as literally written turns a failed
+`mktemp` into `rm -rf` on the caller's directory, which the pre-fix code did not
+do. It is flagged rather than quietly applied.
