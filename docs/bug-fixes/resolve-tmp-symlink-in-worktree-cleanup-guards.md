@@ -322,18 +322,55 @@ three cited sites. Implementation is three creation lines and no test edits.
 
 ### Deviation from the approved one-liner — for the gate to rule on
 
-The design's literal form is `SANDBOX=$(cd "$(mktemp -d ...)" && pwd -P)`. I
-shipped `SANDBOX=$(mktemp -d ...) && SANDBOX=$(cd "$SANDBOX" && pwd -P)`
-instead — same one line per site, same three sites, same resolution.
+The Captain approved a specific literal form at the ideation gate:
 
-Reason, measured on bash 3.2.57: **`cd ""` succeeds and leaves you in the cwd.**
-`bash -c 'X=$(cd "$(false; echo -n)" && pwd -P); echo "[$X]"'` prints the current
-directory, not the empty string. So under the literal form, a failed `mktemp -d`
-(full disk, unwritable `$TMPDIR`) would set `SANDBOX` to the caller's directory
-and the EXIT trap's `rm -rf "$SANDBOX"` would delete the repo checkout the tests
-were run from. `mktemp` exits 1 on failure, so chaining off it keeps the
-pre-existing harmless behaviour: `SANDBOX=""`, `rm -rf ""` a no-op, suite red.
-Verified both branches directly.
+    SANDBOX=$(cd "$(mktemp -d ...)" && pwd -P)
+
+I shipped this instead — same three sites, one line each, same resolution
+semantics, no new files and no new test cases:
+
+    SANDBOX=$(mktemp -d ...) && SANDBOX=$(cd "$SANDBOX" && pwd -P)
+
+**The hazard.** On `/bin/bash` 3.2.57(1)-release, **`cd ""` succeeds and leaves
+you in the current directory.** So under the literal form a failed `mktemp -d`
+(full disk, unwritable `$TMPDIR`) sets `SANDBOX` to the caller's cwd, and the
+EXIT trap's `rm -rf "$SANDBOX"` then deletes the checkout the suite was run
+from. Pre-fix, that same mktemp failure was harmless: `SANDBOX=""` and
+`rm -rf ""` is a no-op.
+
+Measured, all three forms, run from this worktree with `mktemp -d` pointed at a
+nonexistent parent so it genuinely fails:
+
+| form | statement rc | resulting `SANDBOX` |
+|---|---|---|
+| pre-fix | 1 | `` (empty) |
+| approved literal | **0** | **the repo worktree path** |
+| shipped chained | 1 | `` (empty) |
+
+The literal form does not even report the failure — rc 0. Separately confirmed
+that `rm -rf ""` is inert: rc 0, canary file and cwd both still present.
+
+**Is the failure path identical to pre-fix? In both halves on that path, yes —
+but there is one residual difference, named rather than rounded away.**
+
+- Path A, `mktemp -d` fails (the path that matters, and the only failure path
+  pre-fix had): identical in both halves. `SANDBOX` empty, statement rc 1,
+  trap's `rm -rf ""` a no-op, `WIKI_PATH` becomes `/wiki` and the suite goes
+  loudly red. Same as today.
+- Path B, `mktemp` **succeeds** but the following `cd` is refused: this path
+  does not exist pre-fix, because pre-fix never runs `cd`. Measured with an
+  unsearchable parent: `SANDBOX` ends empty, rc 1, and the real temp directory
+  **leaks** (`before=0 after=1`) because `rm -rf ""` cannot reach it. So on this
+  one path the chained form is very slightly worse than pre-fix — a leaked
+  empty directory — while still failing closed and still never deleting
+  anything it should not.
+
+Path B needs `mktemp` to create a fresh mode-700 directory we own and then `cd`
+into it to be refused, so I left it rather than adding machinery. If the gate
+wants it closed, `S=$(mktemp -d ...) && S=$(cd "$S" 2>/dev/null && pwd -P || echo "$S")`
+falls back to the unresolved path and is then no worse than pre-fix on every
+path — at the cost of swallowing the `cd` diagnostic. Captain's call; I have not
+applied it.
 
 ### Summary
 
@@ -345,7 +382,11 @@ diff is 3 files, 19 insertions, 3 deletions, the extra lines being the comment
 at each site explaining why the resolution is there and why it is two steps.
 
 Every number in this report is a measurement taken in this stage against this
-worktree, red then green, not carried over from ideation. The one judgement call
-is the deviation above: the approved form as literally written turns a failed
-`mktemp` into `rm -rf` on the caller's directory, which the pre-fix code did not
-do. It is flagged rather than quietly applied.
+worktree, red then green, not carried over from ideation; the green figures come
+from the code as committed at d0e3ea0 and were then re-run a second time against
+that same commit to confirm them. The one judgement call is the deviation above:
+the approved form as literally written turns a failed `mktemp` into `rm -rf` on
+the caller's directory, which the pre-fix code did not do. It was raised to the
+first officer with the falsifying one-liner before being applied, not after, and
+authorised; the residual Path B difference is named rather than smoothed over,
+with the variant that would close it left for the gate to choose.
