@@ -10,9 +10,32 @@ Rule (the thing being evaluated):
   if neither side already supplies one.
 Otherwise: leave it as today's loud failure.
 """
-import subprocess, sys, tempfile, os
+import argparse, subprocess, sys, tempfile, os
 
-W = os.path.expanduser("~/Library/Mobile Documents/iCloud~md~obsidian/Documents/Nat/Wiki")
+
+def die(msg, code=2):
+    print(f"bounded-union-audit: {msg}", file=sys.stderr)
+    sys.exit(code)
+
+
+def resolve_wiki(arg):
+    wiki = arg or os.environ.get("WIKI_PATH")
+    if not wiki:
+        die("WIKI_PATH is not set and --wiki was not given.\n"
+            "  export WIKI_PATH=/path/to/wiki")
+    wiki = os.path.expanduser(wiki)
+    if not os.path.isdir(wiki):
+        die(f"not a directory: {wiki}")
+    if not os.path.exists(os.path.join(wiki, ".git")):
+        die(f"not a git repository: {wiki} — this audit replays the wiki's own "
+            "merge history, so it needs a real wiki with history")
+    return wiki
+
+
+_ap = argparse.ArgumentParser(prog="bounded-union-audit", description=__doc__,
+                              formatter_class=argparse.RawDescriptionHelpFormatter)
+_ap.add_argument("--wiki", help="wiki root (default: $WIKI_PATH)")
+W = resolve_wiki(_ap.parse_args().wiki)
 
 def git(*a, **kw):
     return subprocess.run(["git", "-C", W] + list(a), capture_output=True, **kw)
