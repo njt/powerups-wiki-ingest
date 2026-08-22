@@ -7,7 +7,7 @@ started: 2026-08-22T13:48:45Z
 completed:
 verdict:
 score: 0.4
-worktree:
+worktree: .worktrees/spacedock-ensign-resolve-tmp-symlink-in-worktree-cleanup-guards
 issue:
 pr:
 mod-block:
