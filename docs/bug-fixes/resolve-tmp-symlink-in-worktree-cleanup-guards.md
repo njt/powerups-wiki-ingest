@@ -1,7 +1,7 @@
 ---
 id: 6a5wjaf19gdem9ca30m9b0cc
 title: Worktree-cleanup self-exclusion guard never fires on macOS (/tmp and $TMPDIR are symlinks)
-status: ideation
+status: implementation
 source: kata:1dvt
 started: 2026-08-22T13:48:45Z
 completed:
@@ -53,7 +53,7 @@ gates:
                 reason: 'Captain approved in chat, having been shown the AC-1 external-command trade explicitly. Proportionality risk resolved by measurement rather than argument: bash -x already traces the trap''s removal calls, so AC-1 stands unnarrowed with zero new code, no test-file changes and no new mode in load-bearing cleanup paths. Red run watched on all three ACs against HEAD, green numbers taken from throwaway copies. FO independently confirmed the blast radius (grep -rn ''worktree list'' bin/ returns nothing) and that test-compile.sh is the load-bearing AC-1 site. Accepted cost: AC-1 runs as an external command, not an in-suite case, so it does not fire on a normal suite run.'
               application:
                 target-stage: implementation
-                state: pending
+                state: consumed
 ---
 
 ## Problem
