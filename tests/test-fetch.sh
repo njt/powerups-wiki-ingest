@@ -12,16 +12,16 @@ echo "$out" | grep -qi "cookie banner\|ads go here" && { echo "FAIL: boilerplate
 out=$("$FETCH" --file "$DIR/fixtures/js-shell.html" 2>/dev/null); rc=$?
 [ -z "$out" ] && [ "$rc" = 3 ] || { echo "FAIL: js-shell should yield empty output + exit 3 (got rc=$rc, bytes=$(printf '%s' "$out" | wc -c))"; fail=1; }
 
-# --- the surf tab-id snippet documented in commands/wiki-ingest.md ---
+# --- the surf tab-id snippet documented in skills/wiki-ingest/SKILL.md ---
 # The block is extracted from the markdown and executed as written against a
 # stub `surf`, so these test the documented text itself rather than a copy of
 # it. The expected tab id comes from the fixture, not from the markdown.
-CMD="$DIR/../commands/wiki-ingest.md"
+CMD="$DIR/../skills/wiki-ingest/SKILL.md"
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 
 sed -n '/^TAB_ID=\$(surf tab new/,/^fi$/p' "$CMD" > "$TMP/block.sh"
-[ -s "$TMP/block.sh" ] || { echo "FAIL: tab-id block extracted empty — the sed anchors no longer match commands/wiki-ingest.md"; fail=1; }
+[ -s "$TMP/block.sh" ] || { echo "FAIL: tab-id block extracted empty — the sed anchors no longer match skills/wiki-ingest/SKILL.md"; fail=1; }
 
 cat > "$TMP/run.sh" <<'RUNNER'
 . "$BLOCK"
