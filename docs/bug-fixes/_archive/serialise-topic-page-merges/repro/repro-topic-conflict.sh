@@ -12,7 +12,13 @@ set -u
 BIN="${BIN:-$(git -C "$(dirname "$0")" rev-parse --show-toplevel)/bin}"
 SELF="$(cd "$(dirname "$0")" && pwd)"
 
-WIKI=$(mktemp -d /tmp/wiki-repro-XXXXXX)
+# Resolved through `pwd -P`: git worktree list reports resolved paths, so an
+# unresolved /tmp (-> /private/tmp) would make the self-exclusion guard in
+# cleanup never match, aborting the trap before rm -rf and leaking the sandbox.
+# Resolve in a second step, not as `cd "$(mktemp -d ...)"`: `cd ""` succeeds in
+# bash and returns the cwd, so a failed mktemp would point WIKI -- and cleanup's
+# rm -rf -- here.
+WIKI=$(mktemp -d /tmp/wiki-repro-XXXXXX) && WIKI=$(cd "$WIKI" && pwd -P)
 export WIKI_PATH="$WIKI"
 PATH="$BIN:$PATH"; export PATH
 
