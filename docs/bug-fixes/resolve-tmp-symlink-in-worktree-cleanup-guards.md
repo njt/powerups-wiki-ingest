@@ -1,7 +1,7 @@
 ---
 id: 6a5wjaf19gdem9ca30m9b0cc
 title: Worktree-cleanup self-exclusion guard never fires on macOS (/tmp and $TMPDIR are symlinks)
-status: implementation
+status: validation
 source: kata:1dvt
 started: 2026-08-22T13:48:45Z
 completed:
@@ -54,6 +54,26 @@ gates:
               application:
                 target-stage: implementation
                 state: consumed
+        - id: gate:6a5wjaf19gdem9ca30m9b0cc:validation
+          stage: validation
+          attempts:
+            - id: gate-attempt:6a5wjaf19gdem9ca30m9b0cc-validation-1
+              briefing:
+                id: briefing:6a5wjaf19gdem9ca30m9b0cc:validation:attempt-1:revision-1
+                digest: sha256:5df585d6d14fe2ad14effbd088ddaa6694a065be33dd5f3d74d246159ec84654
+                request-digest: sha256:0e1595428d88a9a20b35b25ea8304daa52d821b3c5114d93f684ed479ea0665e
+                room-ref: ./resolve-tmp-symlink-in-worktree-cleanup-guards/review/validation/briefing-1
+              resolution:
+                type: Resolution
+                id: resolution:spacedock:6a5wjaf19gdem9ca30m9b0cc:validation:1
+                briefing: briefing:6a5wjaf19gdem9ca30m9b0cc:validation:attempt-1:revision-1
+                by: person:captain
+                at: "2026-08-22T15:14:20.948667Z"
+                decision: approve
+                reason: 'Captain approved in chat. All three ACs PASS red-then-green under a fresh validator''s own commands, not inherited: AC-1 attempted-removal counts 1/0 green against 2/1 red with the decisive xtrace inside cleanup_all; AC-2 repro exit 0 and zero leaked dirs against 128 and 1; AC-3 all four suites green with the falsifying edit exercised for real. Scope held to three functional lines at three sites, 19/3, no test case added and no bin/ change. Deviation from the approved literal ACCEPTED on end-to-end evidence: the approved form returns rc 0 and continues under set -eu while setting SANDBOX to the caller''s cwd, destroying a canary in a sacrificial directory; the shipped chained form leaves it intact. Path B residual disproven by measuring both arms under EACCES and ENOENT. Two findings, both declined under prior FO authorization: AC-1''s Verified-by recipe does not discriminate (Deferred risk, recorded with its promote-to-material condition; the validator proved AC-1''s claim by a stronger positive probe instead), and dead HOLDER_REAL/W_REAL redundancy (Polish).'
+              application:
+                target-stage: done
+                state: pending
 ---
 
 ## Problem
@@ -310,3 +330,216 @@ affected: `bin/wiki-compile:82`, `bin/wiki-recompile:92` and
 `bin/wiki-ingest-run:307,309` remove worktrees by the path they created, never
 by one read back from `git worktree list`, so the defect is confined to the
 three cited sites. Implementation is three creation lines and no test edits.
+
+## Stage Report: implementation
+
+- DONE: The three creation lines changed to resolve through `pwd -P`, and AC-1's before/after re-established as your own measurement — not inherited from the ideation report. Watch each number move: test-compile 2 to 1, test-guard 1 to 0, and confirm the surviving test-compile attempt names holder-worktree and not the sandbox's own root.
+  Commit d0e3ea0. Re-measured here, not inherited: `bash -x tests/test-compile.sh 2>&1 | grep -c -- 'worktree remove --force'` gave **2** at HEAD and **1** after; test-guard.sh gave **1** and **0**. The surviving compile attempt is `.../wiki-compile-test.fQrLgJ/holder-worktree` — the genuine sibling, not `$WIKI_PATH`. The red trace showed both faults in one line: `-C` path `/var/...T//`, target path `/private/var/...`. Reverting either `pwd -P` restores that suite's count and puts the main worktree back in the trace.
+- DONE: AC-2 proven in both halves: the repro exits 0 AND leaves no /tmp/wiki-repro-* behind. Today it is exit 128 with one leaked directory; the leak is the only place this guard's behaviour reaches the end state, so do not let it pass on the exit code alone.
+  Both halves measured. Red: `exit=128`, leak count `1` (`/tmp/wiki-repro-2HMIBS` survived and was removed by hand). Green: `exit=0`, leak count `0`. Both runs still print `REPRODUCED: ingest B failed to merge (exit 1)`, so the repro still reproduces — only its own cleanup changed. Reverting the `pwd -P` returns exit to 128 and the leak to 1.
+- DONE: All four suites green — test-fetch, test-guard, test-curate, test-compile — with nothing left under $TMPDIR afterwards.
+  All four exit 0 and print `ALL PASS` against the committed code; `ls -d "$TMPDIR"/wiki-*-test.*` afterwards matches nothing. Each suite's own cases are what would fail if the `SANDBOX` assignment broke: an empty `SANDBOX` puts `WIKI_PATH` at `/wiki`, and every case that writes to the sandbox wiki goes red.
+
+### Deviation from the approved one-liner — for the gate to rule on
+
+The Captain approved a specific literal form at the ideation gate:
+
+    SANDBOX=$(cd "$(mktemp -d ...)" && pwd -P)
+
+I shipped this instead — same three sites, one line each, same resolution
+semantics, no new files and no new test cases:
+
+    SANDBOX=$(mktemp -d ...) && SANDBOX=$(cd "$SANDBOX" && pwd -P)
+
+**The hazard.** On `/bin/bash` 3.2.57(1)-release, **`cd ""` succeeds and leaves
+you in the current directory.** So under the literal form a failed `mktemp -d`
+(full disk, unwritable `$TMPDIR`) sets `SANDBOX` to the caller's cwd, and the
+EXIT trap's `rm -rf "$SANDBOX"` then deletes the checkout the suite was run
+from. Pre-fix, that same mktemp failure was harmless: `SANDBOX=""` and
+`rm -rf ""` is a no-op.
+
+Measured, all three forms, run from this worktree with `mktemp -d` pointed at a
+nonexistent parent so it genuinely fails:
+
+| form | statement rc | resulting `SANDBOX` |
+|---|---|---|
+| pre-fix | 1 | `` (empty) |
+| approved literal | **0** | **the repo worktree path** |
+| shipped chained | 1 | `` (empty) |
+
+The literal form does not even report the failure — rc 0. Separately confirmed
+that `rm -rf ""` is inert: rc 0, canary file and cwd both still present.
+
+**Is the failure path identical to pre-fix? In both halves on that path, yes —
+but there is one residual difference, named rather than rounded away.**
+
+- Path A, `mktemp -d` fails (the path that matters, and the only failure path
+  pre-fix had): identical in both halves. `SANDBOX` empty, statement rc 1,
+  trap's `rm -rf ""` a no-op, `WIKI_PATH` becomes `/wiki` and the suite goes
+  loudly red. Same as today.
+- Path B, `mktemp` **succeeds** but the following `cd` is refused: this path
+  does not exist pre-fix, because pre-fix never runs `cd`. Measured with an
+  unsearchable parent: `SANDBOX` ends empty, rc 1, and the real temp directory
+  **leaks** (`before=0 after=1`) because `rm -rf ""` cannot reach it. So on this
+  one path the chained form is very slightly worse than pre-fix — a leaked
+  empty directory — while still failing closed and still never deleting
+  anything it should not.
+
+Path B needs `mktemp` to create a fresh mode-700 directory we own and then `cd`
+into it to be refused, so I left it rather than adding machinery. If the gate
+wants it closed, `S=$(mktemp -d ...) && S=$(cd "$S" 2>/dev/null && pwd -P || echo "$S")`
+falls back to the unresolved path and is then no worse than pre-fix on every
+path — at the cost of swallowing the `cd` diagnostic. Captain's call; I have not
+applied it.
+
+### Summary
+
+Three sandbox-creation lines now resolve through `pwd -P`, so the path the
+script holds matches byte-for-byte what `git worktree list --porcelain` hands
+back and the self-exclusion guard finally reaches its `continue`. No test file
+gained a case, no `tests/lib` was created, nothing in `bin/` was touched; the
+diff is 3 files, 19 insertions, 3 deletions, the extra lines being the comment
+at each site explaining why the resolution is there and why it is two steps.
+
+Every number in this report is a measurement taken in this stage against this
+worktree, red then green, not carried over from ideation; the green figures come
+from the code as committed at d0e3ea0 and were then re-run a second time against
+that same commit to confirm them. The one judgement call is the deviation above:
+the approved form as literally written turns a failed `mktemp` into `rm -rf` on
+the caller's directory, which the pre-fix code did not do. It was raised to the
+first officer with the falsifying one-liner before being applied, not after, and
+authorised; the residual Path B difference is named rather than smoothed over,
+with the variant that would close it left for the gate to choose.
+
+## Stage Report: validation
+
+- DONE: Each of AC-1, AC-2 and AC-3 given its own verdict, citing the command you ran and what came back — and each RED case watched going red first. AC-1: attempted-removal counts 2 to 1 and 1 to 0, with the surviving test-compile attempt naming holder-worktree, not the sandbox root.
+  **AC-1 PASS.** `bash -x tests/test-compile.sh 2>&1 | grep -c -- 'worktree remove --force'` → **1**; test-guard → **0**. Red (each `pwd -P` reverted in a throwaway copy) → **2** and **1**. Counts reproduce exactly. The decisive evidence is the xtrace inside `cleanup_all`, not the count: green shows `[ /private/…/wiki = /private/…/wiki ]` → `+ continue`; red shows `[ /private/…/wiki = /var/…/T//…/wiki ]` → `worktree remove --force` on the main worktree → `+ true`. Both filed faults visible in the red `-C` path (`/var`, `T//`).
+- DONE: The negative case actually exercised: revert each `pwd -P` in a throwaway copy and confirm the check goes red for the RIGHT reason.
+  Right reason confirmed above — the red removal target is `$WIKI_PATH` itself, emitted from inside `cleanup_all`. Both suites still print `ALL PASS` in the red runs, which is the trap this bug sets: suite colour carries no signal here.
+- DONE: AC-2 — the repro exits 0 and leaves nothing behind.
+  **AC-2 PASS.** Green: `exit=0`, `/tmp/wiki-repro-*` count **0**, still prints `REPRODUCED: ingest B failed to merge (exit 1)`. Red (`pwd -P` reverted): `exit=128`, leak count **1** (`/tmp/wiki-repro-fdUKML`, removed by hand). Both halves measured, both directions.
+- DONE: AC-3 — both suites still pass, and leave nothing behind. All four run, not only the touched one.
+  **AC-3 PASS.** test-fetch, test-guard, test-curate, test-compile: all `exit=0`, all `ALL PASS`. `ls -d "$TMPDIR"/wiki-*-test.*` after → no matches. AC-3's own falsifying edit exercised for real: with `mktemp` forced to fail (`TMPDIR=/nonexistent-xyz`), `SANDBOX` is empty, `WIKI_PATH` becomes `/wiki`, and test-guard exits **1** — red, as AC-3 requires.
+- DONE: A verdict on the shipped deviation from the approved one-liner, in BOTH halves.
+  **Deviation: ACCEPT.** See the ruling below — measured end-to-end, not argued.
+
+### Ruling on the deviation — accept
+
+Both halves of the failure path measured on `/bin/bash 3.2.57`:
+
+| | approved literal | shipped chained | pre-fix |
+|---|---|---|---|
+| `mktemp` fails → `SANDBOX` | **caller's cwd** | `""` | `""` |
+| trap's `rm -rf "$SANDBOX"` | **deletes cwd** | `rm -rf ""`, rc 0, no-op | same |
+
+Run from a sacrificial directory holding a canary, with `TMPDIR=/nonexistent-xyz`:
+shipped form → canary **survives**, suite red; approved literal → sacrificial
+directory and canary **destroyed**. So the shipped form is identical to pre-fix
+on Path A, and the approved literal is strictly worse than both. The deviation is
+justified.
+
+**Correction to the implementation's Path B claim (finding, not a defect).** It
+reports the chained form "very slightly worse than pre-fix" when `mktemp`
+succeeds but `cd` is refused. Re-measured with a stubbed `mktemp` that chmods the
+new directory to 000: chained form leaks it (`before=0 after=1`) — but pre-fix
+leaks it too, because the same lost execute bit that refuses `cd` also refuses
+`rm -rf` (`rm rc=1`, `before=1 after=2`). Any mechanism that refuses `cd` into a
+fresh self-owned directory refuses `rm -rf` as well, so there is **no residual
+difference in outcome on Path B either**. Recommend the gate does *not* apply the
+offered `|| echo "$S"` fallback: it buys nothing and swallows the `cd`
+diagnostic.
+
+### Findings — triaged, none acted on
+
+1. **AC-1's `Verified by` command does not discriminate what the test plan claims
+   it does.** *Deferred risk — recommend decline, record only.* The test plan says
+   test-compile.sh "can distinguish 'the guard fires' from 'the loop removes
+   nothing at all'". It cannot: case 3 removes `$HOLDER` inline at
+   `tests/test-compile.sh:404`, at trace line 5681, while `cleanup_all` does not
+   start until 6419 — so in the green run the cleanup loop attempts **zero**
+   removals and the one counted attempt is not its. Measured: mutating the guard
+   to an unconditional `continue` (loop skips everything) still yields count **1**
+   and `ALL PASS`. I therefore verified AC-1's second half directly instead —
+   suppressing line 404 so a genuine sibling survives to trap time: the loop
+   removes `holder-worktree` at trace line 6428, *after* `cleanup_all` at 6419,
+   and skips the main worktree; the same probe against the skip-everything mutant
+   gives **0**. AC-1's claim is true and now proven; only its recipe is weak.
+   Promote-to-material if the cleanup loops are ever restructured or `|| true`
+   dropped — the AC as written would pass a regression through. No code change:
+   ideation deliberately rejected adding cases, and this is test scaffolding.
+2. **Dead redundancy at `tests/test-compile.sh:273-277`.** *Polish — decline.*
+   `HOLDER_REAL`/`W_REAL` plus doubled `grep -v` are a pre-existing workaround for
+   this same symlink mismatch; with `$SANDBOX` now resolved they compare equal.
+   Harmless and self-documenting. Notably the codebase already knew about this
+   trap at the assertion site but not at the guard site.
+
+### Summary
+
+All three ACs PASS, each red-then-green under my own commands, and the deviation
+is accepted on end-to-end evidence — the approved literal genuinely destroys the
+caller's directory on a failed `mktemp` while the shipped form does not, and its
+Path B residual turns out not to exist. All four suites are green with nothing
+left under `$TMPDIR` and no `/tmp/wiki-repro-*`; the one leak my red run created
+was removed, and the worktree is clean of my six throwaway copies.
+
+The one thing the implementation's report overstates is AC-1's evidence, not its
+fix: the surviving test-compile attempt comes from case 3's own teardown, so the
+stated command cannot tell the shipped fix from a loop that removes nothing. I
+closed that gap myself with a positive probe rather than by adding a test case.
+Recommend **PASSED**.
+
+### Validation addendum: deviation re-ruled against the revised report (2eff139)
+
+Raised by the first officer: the deviation analysis was revised mid-validation.
+Checked — **no rework needed, and no stale reading occurred.** `2eff139` landed
+before my report commit `2f669c9`, and the Path A/Path B text I ruled on above
+is the revised text, not the superseded one. Code freeze confirmed
+independently: `git diff d0e3ea0..HEAD -- tests/ docs/bug-fixes/_archive/` is
+**empty**; `git diff --numstat d0e3ea0..HEAD` shows only the entity markdown
+(159/1). AC-1/AC-2/AC-3 were measured against an unmoved target.
+
+**Path A — identical in both halves, confirmed, and the approved literal is
+worse than the revised report says.** It reports rc 0; measured, that is right,
+and it matters more than "does not signal the failure":
+
+    approved literal:  rc=0  SANDBOX=[/Users/gnat/Source/Powerups/powerups-wiki-ingest]
+    shipped chained:   rc=1  SANDBOX=[]
+    pre-fix:           rc=1  SANDBOX=[]
+
+Because `cd ""` succeeds, the approved form's `&&` never short-circuits and the
+statement reports **success** while pointing `SANDBOX` at the caller's cwd. I
+also ran it under `set -eu`: execution continues regardless, so no future
+`set -e` retrofit would catch it either. It is not merely unsignalled — it is
+indistinguishable from a normal run right up to the point the trap deletes the
+caller's directory.
+
+**Path B — the revised report's conclusion does not survive measurement.** It
+claims the chained form is "slightly worse than pre-fix: a leaked empty
+directory". Its `before=0 after=1` is correct for the chained form in isolation,
+but pre-fix was never measured under the same conditions. Both mechanisms by
+which a `cd` into a fresh mode-700 self-owned directory can be refused:
+
+| trigger | shipped chained | pre-fix |
+|---|---|---|
+| EACCES — execute bit lost (stub `chmod 000`) | leaks (`before=0 after=1`) | **also leaks** — `rm -rf` refused, `rm rc=1` |
+| ENOENT — directory vanishes before `cd` | no leak | no leak |
+
+The same lost execute bit that refuses `cd` refuses `rm -rf`'s recursion, so
+pre-fix leaks the directory too; and when the directory is simply gone, neither
+leaks. **On every mechanism the outcome is the same as pre-fix.** There is no
+residual disadvantage to trade away. (Aside: on ENOENT the approved literal also
+gives rc 1 and an empty `SANDBOX` — its cwd hazard is specific to Path A, where
+the failed substitution makes the `cd` argument empty.)
+
+**Triage on Path B: correct-but-disproportionate — recommend decline, do not
+fix.** Under the stage rubric this is *Deferred risk*, and field 3 is `none:` —
+no value AC or protected boundary is at risk, which by the rubric cannot
+establish Material. The trigger is unobserved and only reachable by stubbing
+`mktemp` to sabotage its own output. Recommend the gate does **not** apply the
+offered `|| echo "$S"` fallback: it closes nothing real, and it would swallow
+the `cd` diagnostic that is currently the only evidence this path was taken.
+Promote to material only if a real Path B occurrence is ever observed.
+
+Verdicts unchanged: AC-1, AC-2, AC-3 all **PASS**; deviation **ACCEPT**;
+recommendation **PASSED**.

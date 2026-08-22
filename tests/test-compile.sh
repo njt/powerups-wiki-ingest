@@ -35,7 +35,12 @@ DIR="$(cd "$(dirname "$0")" && pwd)"
 BIN="$DIR/../bin"
 fail=0
 
-SANDBOX=$(mktemp -d "${TMPDIR:-/tmp}/wiki-compile-test.XXXXXX")
+# Resolved through `pwd -P`: git worktree list reports resolved paths, so an
+# unresolved $TMPDIR (/var -> /private/var, plus its trailing slash) would make
+# the self-exclusion guard in cleanup_all never match. Resolve in a second step,
+# not as `cd "$(mktemp -d ...)"`: `cd ""` succeeds in bash and returns the cwd,
+# so a failed mktemp would point SANDBOX -- and cleanup_all's rm -rf -- here.
+SANDBOX=$(mktemp -d "${TMPDIR:-/tmp}/wiki-compile-test.XXXXXX") && SANDBOX=$(cd "$SANDBOX" && pwd -P)
 # NEVER a real wiki. Everything below writes into this temp dir only.
 export WIKI_PATH="$SANDBOX/wiki"
 HOLDER="$SANDBOX/holder-worktree"    # the extra worktree case 3 stands up
