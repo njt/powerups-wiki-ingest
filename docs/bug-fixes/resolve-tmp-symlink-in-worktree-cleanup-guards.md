@@ -23,6 +23,17 @@ gates:
                 digest: sha256:fbd69c4da99dbe7fc2cedb3ec2ec90524463884b6a02f71ecaa5c7acbc21b38d
                 request-digest: sha256:a79e47f43da6ef1ac608e454a865245daf69801f3597fba7ffd94181e5503890
                 room-ref: ./resolve-tmp-symlink-in-worktree-cleanup-guards/review/backlog/briefing-1
+              resolution:
+                type: Resolution
+                id: resolution:spacedock:6a5wjaf19gdem9ca30m9b0cc:backlog:1
+                briefing: briefing:6a5wjaf19gdem9ca30m9b0cc:backlog:attempt-1:revision-1
+                by: person:captain
+                at: "2026-08-22T13:48:18.057597Z"
+                decision: approve
+                reason: 'Captain approved in chat. Defect measured rather than asserted (path mismatch reproduced directly; repro exit 128 reproduced against an unmodified copy from HEAD). Meets both backlog outputs: damage-based Problem section, and kata:1dvt now in source. Three ACs carry Verified-by clauses and named falsifying edits. Ideation is asked to decide whether AC-1''s call-tracing harness is proportionate, and to correct the stale _archive path at line 39.'
+              application:
+                target-stage: ideation
+                state: pending
 ---
 
 ## Problem
