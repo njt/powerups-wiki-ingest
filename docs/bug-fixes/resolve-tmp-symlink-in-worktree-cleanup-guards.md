@@ -468,3 +468,58 @@ fix: the surviving test-compile attempt comes from case 3's own teardown, so the
 stated command cannot tell the shipped fix from a loop that removes nothing. I
 closed that gap myself with a positive probe rather than by adding a test case.
 Recommend **PASSED**.
+
+### Validation addendum: deviation re-ruled against the revised report (2eff139)
+
+Raised by the first officer: the deviation analysis was revised mid-validation.
+Checked — **no rework needed, and no stale reading occurred.** `2eff139` landed
+before my report commit `2f669c9`, and the Path A/Path B text I ruled on above
+is the revised text, not the superseded one. Code freeze confirmed
+independently: `git diff d0e3ea0..HEAD -- tests/ docs/bug-fixes/_archive/` is
+**empty**; `git diff --numstat d0e3ea0..HEAD` shows only the entity markdown
+(159/1). AC-1/AC-2/AC-3 were measured against an unmoved target.
+
+**Path A — identical in both halves, confirmed, and the approved literal is
+worse than the revised report says.** It reports rc 0; measured, that is right,
+and it matters more than "does not signal the failure":
+
+    approved literal:  rc=0  SANDBOX=[/Users/gnat/Source/Powerups/powerups-wiki-ingest]
+    shipped chained:   rc=1  SANDBOX=[]
+    pre-fix:           rc=1  SANDBOX=[]
+
+Because `cd ""` succeeds, the approved form's `&&` never short-circuits and the
+statement reports **success** while pointing `SANDBOX` at the caller's cwd. I
+also ran it under `set -eu`: execution continues regardless, so no future
+`set -e` retrofit would catch it either. It is not merely unsignalled — it is
+indistinguishable from a normal run right up to the point the trap deletes the
+caller's directory.
+
+**Path B — the revised report's conclusion does not survive measurement.** It
+claims the chained form is "slightly worse than pre-fix: a leaked empty
+directory". Its `before=0 after=1` is correct for the chained form in isolation,
+but pre-fix was never measured under the same conditions. Both mechanisms by
+which a `cd` into a fresh mode-700 self-owned directory can be refused:
+
+| trigger | shipped chained | pre-fix |
+|---|---|---|
+| EACCES — execute bit lost (stub `chmod 000`) | leaks (`before=0 after=1`) | **also leaks** — `rm -rf` refused, `rm rc=1` |
+| ENOENT — directory vanishes before `cd` | no leak | no leak |
+
+The same lost execute bit that refuses `cd` refuses `rm -rf`'s recursion, so
+pre-fix leaks the directory too; and when the directory is simply gone, neither
+leaks. **On every mechanism the outcome is the same as pre-fix.** There is no
+residual disadvantage to trade away. (Aside: on ENOENT the approved literal also
+gives rc 1 and an empty `SANDBOX` — its cwd hazard is specific to Path A, where
+the failed substitution makes the `cd` argument empty.)
+
+**Triage on Path B: correct-but-disproportionate — recommend decline, do not
+fix.** Under the stage rubric this is *Deferred risk*, and field 3 is `none:` —
+no value AC or protected boundary is at risk, which by the rubric cannot
+establish Material. The trigger is unobserved and only reachable by stubbing
+`mktemp` to sabotage its own output. Recommend the gate does **not** apply the
+offered `|| echo "$S"` fallback: it closes nothing real, and it would swallow
+the `cd` diagnostic that is currently the only evidence this path was taken.
+Promote to material only if a real Path B occurrence is ever observed.
+
+Verdicts unchanged: AC-1, AC-2, AC-3 all **PASS**; deviation **ACCEPT**;
+recommendation **PASSED**.
