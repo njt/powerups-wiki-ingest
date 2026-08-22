@@ -1,7 +1,7 @@
 ---
 id: 6a5wjaf19gdem9ca30m9b0cc
 title: Worktree-cleanup self-exclusion guard never fires on macOS (/tmp and $TMPDIR are symlinks)
-status: backlog
+status: ideation
 source: kata:1dvt
 started:
 completed:
@@ -33,7 +33,7 @@ gates:
                 reason: 'Captain approved in chat. Defect measured rather than asserted (path mismatch reproduced directly; repro exit 128 reproduced against an unmodified copy from HEAD). Meets both backlog outputs: damage-based Problem section, and kata:1dvt now in source. Three ACs carry Verified-by clauses and named falsifying edits. Ideation is asked to decide whether AC-1''s call-tracing harness is proportionate, and to correct the stale _archive path at line 39.'
               application:
                 target-stage: ideation
-                state: pending
+                state: consumed
 ---
 
 ## Problem
