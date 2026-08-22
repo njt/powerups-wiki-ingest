@@ -43,6 +43,17 @@ gates:
                 digest: sha256:0e7c02db3cbaf9baf59492e1f6c63e66b9be3f5c35bc8f84a8b635135ce97cd7
                 request-digest: sha256:d1eb8c6ba45114f959f8464b137606633b65703b031e4fca6199e9cf2797e70e
                 room-ref: ./resolve-tmp-symlink-in-worktree-cleanup-guards/review/ideation/briefing-1
+              resolution:
+                type: Resolution
+                id: resolution:spacedock:6a5wjaf19gdem9ca30m9b0cc:ideation:1
+                briefing: briefing:6a5wjaf19gdem9ca30m9b0cc:ideation:attempt-1:revision-1
+                by: person:captain
+                at: "2026-08-22T14:34:04.457561Z"
+                decision: approve
+                reason: 'Captain approved in chat, having been shown the AC-1 external-command trade explicitly. Proportionality risk resolved by measurement rather than argument: bash -x already traces the trap''s removal calls, so AC-1 stands unnarrowed with zero new code, no test-file changes and no new mode in load-bearing cleanup paths. Red run watched on all three ACs against HEAD, green numbers taken from throwaway copies. FO independently confirmed the blast radius (grep -rn ''worktree list'' bin/ returns nothing) and that test-compile.sh is the load-bearing AC-1 site. Accepted cost: AC-1 runs as an external command, not an in-suite case, so it does not fire on a normal suite run.'
+              application:
+                target-stage: implementation
+                state: pending
 ---
 
 ## Problem
