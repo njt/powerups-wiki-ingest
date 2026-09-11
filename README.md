@@ -10,17 +10,21 @@ A [Claude Code](https://claude.ai/code) plugin: feed it a URL or GitHub repo, an
 
 Each ingest runs in an isolated git worktree and writes only files it uniquely owns, so many URLs process in parallel without contending. `index.md` and `log.md` carry `merge=union`; nothing else is shared, because cross-page curation is a separate step (below) rather than something each ingest does on its way past.
 
-### Three-tier layout
+### Layout
 
-Every source lands in three places, so the verbatim record stays separable from the interpretation:
+Every source lands in three places, so the verbatim record stays separable from the interpretation. Topics are a fixed list, and their pages are compiled, never hand-filed:
 
-| Directory | Contents |
-|-----------|----------|
+| Path | Contents |
+|------|----------|
 | `raw/<slug>.md` | the **verbatim** fetched source (extracted with trafilatura). Written by the pipeline, never rewritten by the model. |
-| `summary/<slug>.md` | a concise precis with curated frontmatter (title, author, dates). |
-| `topic/<Title>.md` | analysis and synthesis, cross-linked with `[[wikilinks]]`. May draw on several sources. |
+| `summary/<slug>.md` | a concise precis with curated frontmatter (title, author, dates, and `topics:` — the one or two topics the source is filed under). |
+| `note/<Title>.md` | the analysis of that one source (quotes, themes, opinionated take), cross-linked with `[[wikilinks]]`. |
+| `topics.md` | the fixed list of topics: `slug | title | scope`. Includes `misc`. Edited by people, read by the tools. |
+| `topic/<Title>.md` | one **compiled** page per entry in `topics.md`, rebuilt by `wiki-compile` from every summary tagged with it. Nothing else writes here. |
 
-`index.md` and `log.md` stay at the wiki root.
+`index.md` (one section per topic) and `log.md` stay at the wiki root.
+
+The topic behaviour switches on when `topics.md` exists in the wiki. A wiki without it gets the 2.x behaviour (a per-source page under `topic/`), so upgrading is a migration you run, not something an ingest does to you.
 
 ## Curation
 
@@ -37,11 +41,19 @@ wiki-curate dirty --since HEAD~20    # themes a batch of new sources touched
 wiki-curate classify                 # entity pages vs coined concepts
 wiki-curate gaps                     # every page's "What's Missing", collected
 wiki-curate fixme                    # pending %%fix: ...%% notes you left while reading
+wiki-curate topics                   # members per topic, oversized ones, what is in misc
 
-wiki-compile --theme "X"             # rebuild one theme from ALL its sources
+wiki-compile --theme "X"             # rebuild one topic from ALL its tagged summaries
 wiki-recompile --since HEAD~20 --top 8   # recompile only what the batch touched
 wiki-review --branch curate/...      # render a compile branch as a report
+wiki-retag --topic misc              # re-file summaries after you edit topics.md
 ```
+
+Topics do not discover themselves. `topics.md` is the list; every ingest picks
+one or two entries from it; `wiki-curate topics` tells you when a topic has
+outgrown one page or when `misc` has accumulated something that wants a name. To
+split a topic: edit the table, `wiki-retag --topic <old-slug>`, then
+`wiki-recompile`.
 
 The everyday loop is two commands: ingest a batch, then
 `wiki-recompile --since <ref-before-the-batch>`. A theme is dirty when its own
@@ -111,6 +123,19 @@ WIKI_PATH=/path/to/wiki wiki-ingest-setup
 ```
 
 Pass several URLs at once; each ingests in parallel.
+
+## Upgrading from 2.x
+
+2.x wrote one `topic/<Title>.md` per source, which is how a wiki ends up with a thousand one-article "topics". 3.0 keeps that page but files it as `note/<Title>.md`, tags each summary with `topics:`, and reserves `topic/` for the compiled pages of a fixed list. Links keep working: Obsidian resolves `[[Title]]` by filename anywhere in the vault. Migrate with:
+
+```bash
+wiki-migrate-topics --all --topics-file "$PLUGIN/assets/topics.md"   # on a branch: moves pages, seeds topics.md, backfills topics:, restructures index.md
+wiki-retag --topic misc --branch curate/topics-YYYYMMDD               # let the model file what the backfill could not
+wiki-recompile --branch curate/topics-YYYYMMDD                        # build every topic page
+wiki-review --branch curate/topics-YYYYMMDD                           # then merge it yourself
+```
+
+Stop ingesting while the branch is open: `index.md` is `merge=union`, and a union merge of a restructured file against new appends duplicates sections. Edit the topic list in `assets/topics.md` (or your own copy) first; the titles of pages you already have compiled should be kept exactly so their links survive.
 
 ## Upgrading from 1.x
 

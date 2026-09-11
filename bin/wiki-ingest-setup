@@ -27,8 +27,9 @@ done
 
 SELF="$(cd "$(dirname "$0")" && pwd)"
 TEMPLATE="$SELF/../assets/wiki-CLAUDE.md"
+TOPICS="$SELF/../assets/topics.md"
 
-mkdir -p "$WIKI/raw" "$WIKI/summary" "$WIKI/topic"
+mkdir -p "$WIKI/raw" "$WIKI/summary" "$WIKI/note" "$WIKI/topic"
 
 # git init (with optional external gitdir)
 if [ ! -e "$WIKI/.git" ]; then
@@ -47,11 +48,14 @@ fi
 
 # Seed files (only if absent)
 [ -f "$WIKI/CLAUDE.md" ] || cp "$TEMPLATE" "$WIKI/CLAUDE.md"
+# topics.md is what switches the topic behaviour on (see README, "Layout").
+[ -f "$WIKI/topics.md" ] || cp "$TOPICS" "$WIKI/topics.md"
 [ -f "$WIKI/index.md" ]  || printf '# Wiki Index\n\n' > "$WIKI/index.md"
 [ -f "$WIKI/log.md" ]    || printf '# Wiki Log\n\n' > "$WIKI/log.md"
 [ -f "$WIKI/ingest-queue.md" ] || printf '# Ingest Queue\n\nURLs that could not be fetched cleanly. Retry with surf or handle manually.\n' > "$WIKI/ingest-queue.md"
 [ -f "$WIKI/raw/.gitkeep" ]     || : > "$WIKI/raw/.gitkeep"
 [ -f "$WIKI/summary/.gitkeep" ] || : > "$WIKI/summary/.gitkeep"
+[ -f "$WIKI/note/.gitkeep" ]    || : > "$WIKI/note/.gitkeep"
 [ -f "$WIKI/topic/.gitkeep" ]   || : > "$WIKI/topic/.gitkeep"
 
 # Initial commit if the repo has no commits yet

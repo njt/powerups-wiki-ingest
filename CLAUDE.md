@@ -10,7 +10,10 @@ A Claude Code plugin that ingests URLs into an Obsidian wiki.
   - `wiki-ingest-fetch` — `curl` piped into `trafilatura --markdown`: deterministic readability extraction, no browser and no LLM; exit 3 on an empty/JS-shell page.
   - `wiki-ingest-dupcheck` — deterministic duplicate detection; scans `raw/` and `summary/`.
   - `wiki-ingest-backfill` — re-archives URLs recorded in `ingest-queue.md`.
-  - `wiki-ingest-setup` — one-time wiki bootstrap.
+  - `wiki-ingest-setup` — one-time wiki bootstrap; seeds `topics.md` and `note/`.
+  - `wiki-meta` — Python 3, stdlib only. The one parser/writer for summary frontmatter and `topics.md` (`topics`, `get`, `set`, `normalize-topics`). Other scripts import it with `SourceFileLoader` (it has no `.py` extension). Lists are written in block YAML form on purpose: Obsidian rewrites flow lists and fails silently on malformed ones.
+  - `wiki-retag` — LLM re-files summaries against `topics.md` (after a split or for `misc`); writes only `topics:` lines, on a branch, and a worktree diff touching anything else fails the run. That diff check, not `--allowedTools`, is the guardrail: the configured CLI wrapper runs with permissions skipped.
+  - `wiki-migrate-topics` — the one-off 2.x → 3.0 migration (move per-source pages to `note/`, seed `topics.md`, backfill `topics:`, restructure `index.md`), on a branch, rerunnable.
   - `wiki-curate` — Python 3, stdlib only. Read-only corpus index + health audit; never writes to the wiki. Subcommands: `index`, `audit`, `themes`, `sources`, `dirty` (what a batch touched), `classify` (entity vs concept), `gaps`, `fixme`. Filenames are NFC-normalised before resolving links: macOS/iCloud store them decomposed and markdown links compose them, so raw comparison silently reports accented titles as dead links.
   - `wiki-compile` — rebuilds ONE topic page from all its sources. Detached worktree, commits to a branch, moves the branch ref afterwards; never checks the branch out (that broke a whole batch run once) and never merges.
   - `wiki-recompile` — drives `wiki-compile` serially, auditing before and after. `--since REF` selects only the themes a batch touched; `--top` caps it.
@@ -31,6 +34,17 @@ Never point `WIKI_PATH` at a real wiki when testing.
 - Scripts must NOT reference `${CLAUDE_PLUGIN_ROOT}` (broken in command markdown, issue #9354). Rely on `bin/`-on-PATH and `$(dirname "$0")` for sibling/asset lookups.
 - Command and skill markdown must NOT contain `$0`–`$9` anywhere in its body, fenced code included. Claude Code replaces them with the user's arguments before the agent ever sees the text — 0-based, so `$2` becomes the *third* URL and silently rewrites the snippet into something that no longer runs. Out-of-range indices survive, so a short invocation hides it. In shell examples reach for `$NF`, or `$k` with `awk -v k=2`, or a form that does not start with `$`.
 - The LLM runs with `--allowedTools` as a real guardrail — do not add `--dangerously-skip-permissions` to the default path.
+
+## Topics (3.0)
+
+`topic/` holds exactly the titles listed in `topics.md`, and only `wiki-compile`
+writes there. The per-source analysis page is `note/<Title>.md`. Every summary
+carries `topics:` (one or two slugs, primary first). The new ingest prompt and
+guard switch on only when `topics.md` exists in the wiki worktree; without it
+the 2.x behaviour runs unchanged, because the hourly launchd job calls this
+repo's working-tree `bin/` directly and a wiki must not change shape before it
+has been migrated. Design and the load-bearing ledger:
+`docs/superpowers/specs/2026-09-11-fixed-topics-design.md`.
 
 ## Merging compile cycles
 
