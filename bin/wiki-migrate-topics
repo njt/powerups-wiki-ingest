@@ -1,0 +1,723 @@
+#!/usr/bin/env python3
+"""wiki-migrate-topics — the one-off 2.x -> 3.0 migration of a wiki, on a branch.
+
+Before 3.0 every ingest wrote its analysis page into topic/, so topic/ held
+1151 pages of which about 18 were topics. 3.0 makes the topic list explicit
+(topics.md), moves the per-source pages to note/, tags every summary with its
+topics, and rebuilds index.md around the list. This script does exactly that,
+deterministically, and it is rerunnable: every step is idempotent, so a second
+run (or a run after a partial one) changes nothing it already did.
+
+    wiki-migrate-topics --wiki DIR [--branch NAME] [--topics-file FILE]
+                        (--step N [--step N ...] | --all) [--dry-run]
+
+Steps, always run in this order:
+
+  1  Move every topic/ page whose title is not a listed topic title into note/
+     (git mv, so history follows; links resolve by basename, so nothing else
+     changes). Add note/.gitkeep.
+  2  Seed topics.md from --topics-file (default: the plugin's assets/topics.md).
+  3  Backfill `topics:` on every summary that lacks it, from three signals in
+     priority order: (a) the declared provenance of a listed compiled page
+     (a summary cited in its *Compiled from …* footer belongs to that topic);
+     (b) the index.md section of the summary's note, through the fixed
+     section-to-slug table below (printed when the step runs); (c) misc.
+     The first signal that fires is the primary; at most two are kept.
+  4  Restructure index.md: `# Wiki Index`, an intro line with no page count, a
+     `## Topics` section listing every compiled page, then one `## <Title>`
+     section per topic (in topics.md order) whose first line links the page and
+     repeats the scope, followed by the entries whose note's primary topic it
+     is. Entries whose target is a listed topic title are dropped (they are
+     listed under `## Topics` instead); every other original entry line appears
+     exactly once in the output, and the script asserts that before writing.
+  5  Rewrite the schema sections of the wiki's CLAUDE.md from the plugin's
+     assets/wiki-CLAUDE.md, keeping the wiki's own sections (everything from
+     the first of `## Workflows`, `## Relationship to the Rest of the Vault`,
+     `## Principles` onward) verbatim.
+
+Steps 6 and 7 of the design (retag misc, recompile every topic) are run by
+hand with `wiki-retag --branch` and `wiki-recompile --branch` on the same
+branch.
+
+How it runs. The live checkout is never touched: a throwaway worktree is added
+DETACHED at the branch tip (or at main when the branch does not exist yet),
+each step is performed and committed there, and the branch ref is moved with
+`git update-ref` afterwards. The branch is never checked out (checking it out
+would collide with any other worktree holding it) and nothing is merged;
+`wiki-review` and Nat decide that. `--dry-run` performs the steps in the
+worktree, prints everything a real run would, then discards the worktree
+without committing or moving the branch.
+
+The design says why the index restructure must land in a quiesced window
+(merge=union duplicates moved sections when main appends to them) and why
+the git mv of accented names is clean (git tracks names NFC): see
+docs/superpowers/specs/2026-09-11-fixed-topics-design.md, ledger A4 and A14.
+
+Exit: 0 ok, 2 usage/config, 4 git failed, 5 a step's assertion failed.
+Python 3.8+, standard library only; imports the sibling wiki-meta and
+wiki-curate for the frontmatter writer and the provenance graph.
+"""
+
+import argparse
+import datetime as _dt
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+import unicodedata
+from collections import Counter, OrderedDict, defaultdict
+from importlib.machinery import SourceFileLoader
+from importlib.util import module_from_spec, spec_from_file_location
+
+PROG = "wiki-migrate-topics"
+HERE = os.path.dirname(os.path.abspath(__file__))
+ASSETS = os.path.join(os.path.dirname(HERE), "assets")
+
+# --- the old index.md section headings and where each one goes ----------------
+# Printed by steps 3 and 4 so the mapping a run used is in its log. "Synthesis"
+# is special: an entry there whose title is a listed topic is dropped (it is
+# listed under `## Topics` instead); anything else in it goes to misc. A
+# heading that is itself a topic title maps to that topic (so a half-migrated
+# index is read correctly), the `## Topics` section is treated like Synthesis,
+# and any other heading goes to misc with a warning.
+SYNTHESIS = "Synthesis"
+TOPICS_SECTION = "Topics"
+SECTION_MAP = OrderedDict([
+    ("Agentic Development", "agent-coding-workflow"),
+    ("Agent Design & Architecture", "agent-architecture"),
+    ("Agent Orchestration & Coordination", "agent-orchestration"),
+    ("Memory & Context", "agent-memory-and-context"),
+    ("Quality & Guardrails", "guardrails-and-feedback-loops"),
+    ("Security & Sandboxing", "security-and-sandboxing"),
+    ("Software Engineering", "software-engineering-craft"),
+    ("Databases & Data", "databases-and-data"),
+    ("Developer Tools", "developer-tools"),
+    ("Local & Personal Computing", "local-and-open-source-inference"),
+    ("AI Research & Models", "ai-research-and-models"),
+    ("AI Infrastructure & Hardware", "ai-infrastructure-and-hardware"),
+    ("Energy & Hardware", "ai-infrastructure-and-hardware"),
+    ("Hardware & Electronics", "ai-infrastructure-and-hardware"),
+    ("Ideas & Culture", "ideas-and-culture"),
+])
+
+# The wiki's own CLAUDE.md sections, kept verbatim from the first one found.
+TAIL_HEADINGS = ("## Workflows", "## Relationship to the Rest of the Vault",
+                 "## Principles")
+
+INDEX_TITLE = "# Wiki Index"
+INDEX_INTRO = ("Every source has a note, listed here under its primary topic. "
+               "The topics are the compiled pages in `topic/`, defined in "
+               "`topics.md`; edit that file to change them.")
+# `- [[Target]] — one line`; the target runs to the first `]]`, so a `#` inside
+# a title (C# MCP Cross App Access) is part of the title, not an anchor.
+ENTRY_RE = re.compile(r"^- \[\[([^\]]+?)\]\]")
+H2_RE = re.compile(r"^##\s+(.+?)\s*$")
+FENCE_RE = re.compile(r"^(```|~~~)")
+
+
+class Fail(Exception):
+    def __init__(self, msg, code=5):
+        super().__init__(msg)
+        self.code = code
+
+
+def _load(name, filename):
+    path = os.path.join(HERE, filename)
+    if not os.path.isfile(path):
+        raise Fail(f"{filename} not found beside me at {path}", code=2)
+    spec = spec_from_file_location(name, path, loader=SourceFileLoader(name, path))
+    mod = module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def nfc(s):
+    return unicodedata.normalize("NFC", s)
+
+
+def tkey(s):
+    """Title comparison key: composed and case-folded, as Obsidian resolves."""
+    return nfc(s).casefold()
+
+
+def say(msg=""):
+    print(msg, flush=True)
+
+
+def warn(msg):
+    print(f"{PROG}: warning: {msg}", file=sys.stderr, flush=True)
+
+
+# --- git ----------------------------------------------------------------------
+
+def git(cwd, *args, check=True, quotepath=False):
+    cmd = ["git", "-C", cwd]
+    if not quotepath:
+        cmd += ["-c", "core.quotePath=false"]
+    cmd += list(args)
+    r = subprocess.run(cmd, capture_output=True, text=True)
+    if check and r.returncode != 0:
+        raise Fail(f"git {' '.join(args[:2])} failed (exit {r.returncode}): "
+                   f"{r.stderr.strip() or r.stdout.strip()}", code=4)
+    return r
+
+
+def git_out(cwd, *args, **kw):
+    return git(cwd, *args, **kw).stdout
+
+
+def ls_files(cwd, *paths):
+    out = git_out(cwd, "ls-files", "-z", "--", *paths)
+    return [p for p in out.split("\0") if p]
+
+
+# --- files --------------------------------------------------------------------
+
+def read_text(path):
+    with open(path, "r", encoding="utf-8", newline="") as fh:
+        return fh.read()
+
+
+def write_text(path, text, meta):
+    meta.write_text_atomic(path, text)
+
+
+def parse_index(text):
+    """Split index.md into (preamble_lines, sections).
+
+    A section is {"heading": str, "lines": [str], "entries": [(line, target)]}
+    where `lines` is every line under the heading (heading excluded) and an
+    entry is a `- [[Target]] …` line. Fenced code is left alone but nothing in
+    the corpus's index has any.
+    """
+    pre, sections, cur = [], [], None
+    in_fence = False
+    for line in text.split("\n"):
+        if FENCE_RE.match(line):
+            in_fence = not in_fence
+        m = None if in_fence else H2_RE.match(line)
+        if m:
+            cur = {"heading": nfc(m.group(1)), "lines": [], "entries": []}
+            sections.append(cur)
+            continue
+        if cur is None:
+            pre.append(line)
+            continue
+        cur["lines"].append(line)
+        e = ENTRY_RE.match(line)
+        if e:
+            target = e.group(1).split("|", 1)[0].strip()
+            cur["entries"].append((line, nfc(target)))
+    return pre, sections
+
+
+# --- the migration ------------------------------------------------------------
+
+class Migration:
+    def __init__(self, args, meta, curate):
+        self.args = args
+        self.meta = meta
+        self.curate = curate
+        self.wiki = args.wiki
+        self.wt = None
+        self.base = None
+        self.branch_existed = False
+        self.commits = []
+        self.topics = meta.parse_topics_text(read_text(args.topics_file),
+                                             where=args.topics_file)
+        self.slugs = [t["slug"] for t in self.topics]
+        self.by_slug = {t["slug"]: t for t in self.topics}
+        self.by_title = {tkey(t["title"]): t for t in self.topics}
+        self.misc = meta.FALLBACK_SLUG
+        self._warned_headings = set()
+
+    # -- worktree lifecycle --------------------------------------------------
+    def open_worktree(self):
+        r = git(self.wiki, "rev-parse", "--verify", "--quiet",
+                f"refs/heads/{self.args.branch}", check=False)
+        if r.returncode == 0:
+            self.base = r.stdout.strip()
+            self.branch_existed = True
+        else:
+            self.base = git_out(self.wiki, "rev-parse", "--verify", "main").strip()
+        self.wt = tempfile.mkdtemp(prefix="wiki-migrate-")
+        # A detached worktree: the branch is never checked out anywhere, so
+        # nothing else holding it (an audit worktree, Nat's own checkout) can
+        # make this fail, and update-ref moves it afterwards.
+        git(self.wiki, "worktree", "add", "--quiet", "--detach", self.wt, self.base)
+        say(f"{PROG}: branch {self.args.branch} "
+            f"({'exists' if self.branch_existed else 'new, off main'}) at "
+            f"{self.base[:12]}; worktree {self.wt}")
+
+    def close_worktree(self):
+        if not self.wt:
+            return
+        r = git(self.wiki, "worktree", "remove", "--force", self.wt, check=False)
+        if r.returncode != 0:
+            shutil.rmtree(self.wt, ignore_errors=True)
+            git(self.wiki, "worktree", "prune", check=False)
+        self.wt = None
+
+    def commit_step(self, n, paths, subject, body=""):
+        """Stage `paths`, commit if anything changed. Returns True if committed."""
+        if paths:
+            git(self.wt, "add", "-A", "--", *paths)
+        if git(self.wt, "diff", "--cached", "--quiet", check=False).returncode == 0:
+            say(f"step {n}: no change")
+            return False
+        if self.args.dry_run:
+            names = git_out(self.wt, "diff", "--cached", "--name-only", "--",
+                            *(paths or ["."])).rstrip("\n")
+            n_paths = len(names.split("\n")) if names else 0
+            say(f"step {n}: DRY RUN — would commit {n_paths} path(s): {subject}")
+            return False
+        msg = subject + ("\n\n" + body if body else "")
+        git(self.wt, "commit", "--quiet", "-m", msg)
+        sha = git_out(self.wt, "rev-parse", "HEAD").strip()
+        self.commits.append((n, sha))
+        say(f"step {n}: committed {sha[:12]}: {subject}")
+        return True
+
+    def finish(self):
+        if self.args.dry_run:
+            say(f"{PROG}: DRY RUN — nothing committed, branch "
+                f"{self.args.branch} untouched")
+            return
+        head = git_out(self.wt, "rev-parse", "HEAD").strip()
+        if head == self.base:
+            say(f"{PROG}: nothing to do; branch {self.args.branch} "
+                f"{'unchanged' if self.branch_existed else 'not created'}")
+            return
+        # update-ref, not `branch -f`: branch -f refuses to move a branch that
+        # is checked out in any worktree. The old value is asserted so a branch
+        # someone else moved meanwhile is not overwritten; a new branch must
+        # still be absent (the all-zero SHA).
+        old = self.base if self.branch_existed else "0" * 40
+        git(self.wiki, "update-ref", f"refs/heads/{self.args.branch}", head, old)
+        say(f"{PROG}: {len(self.commits)} commit(s) on {self.args.branch} "
+            f"({head[:12]}). Review with  git -C \"{self.wiki}\" diff "
+            f"main..{self.args.branch} --stat")
+
+    # -- helpers over the topic list -------------------------------------------
+    def listed_title(self, title):
+        return self.by_title.get(tkey(title))
+
+    def section_slug(self, heading):
+        """Where an old index section's entries go: a slug, or None for the
+        two sections whose entries are judged one by one (Synthesis, Topics)."""
+        h = nfc(heading).strip()
+        if h in (SYNTHESIS, TOPICS_SECTION):
+            return None
+        t = self.listed_title(h)
+        if t:
+            return t["slug"]
+        slug = SECTION_MAP.get(h)
+        if slug is None:
+            if h not in self._warned_headings:
+                self._warned_headings.add(h)
+                warn(f"index.md section {h!r} is not in the mapping table; "
+                     f"its entries go to {self.misc}")
+            return self.misc
+        if slug not in self.by_slug:
+            if h not in self._warned_headings:
+                self._warned_headings.add(h)
+                warn(f"index.md section {h!r} maps to {slug!r}, which is not "
+                     f"in {self.args.topics_file}; its entries go to {self.misc}")
+            return self.misc
+        return slug
+
+    def print_section_map(self):
+        say("  old index.md section                  -> topic slug")
+        say(f"  {SYNTHESIS:<38}-> (listed titles dropped; others -> {self.misc})")
+        for h, s in SECTION_MAP.items():
+            mark = "" if s in self.by_slug else f"   (not in {os.path.basename(self.args.topics_file)}: -> {self.misc})"
+            say(f"  {h:<38}-> {s}{mark}")
+        say(f"  {'<a topic title>':<38}-> that topic")
+        say(f"  {'<anything else>':<38}-> {self.misc} (with a warning)")
+
+    def vault(self):
+        return self.curate.Vault(self.wt)
+
+    # -- step 1: move ----------------------------------------------------------
+    def step1(self):
+        say("== step 1: move unlisted topic/ pages to note/")
+        tracked = ls_files(self.wt, "topic")
+        moves, kept = [], []
+        for rel in tracked:
+            inner = rel[len("topic/"):]
+            if "/" not in inner and inner.endswith(".md") \
+                    and self.listed_title(inner[:-3]):
+                kept.append(inner[:-3])
+                continue
+            moves.append((rel, "note/" + inner))
+        present = {tkey(k) for k in kept}
+        missing = [t["title"] for t in self.topics if tkey(t["title"]) not in present]
+        os.makedirs(os.path.join(self.wt, "note"), exist_ok=True)
+        clashes = [dst for _, dst in moves if os.path.exists(os.path.join(self.wt, dst))]
+        if clashes:
+            raise Fail("cannot move: already present in note/: "
+                       + ", ".join(clashes[:5])
+                       + (" …" if len(clashes) > 5 else ""))
+        for sub in {os.path.dirname(dst) for _, dst in moves}:
+            os.makedirs(os.path.join(self.wt, sub), exist_ok=True)
+        # Batched: one git mv per 200 files rather than one per file. Nested
+        # paths keep their shape under note/, so they go one at a time.
+        flat = [(s, d) for s, d in moves if "/" not in d[len("note/"):]]
+        nested = [(s, d) for s, d in moves if "/" in d[len("note/"):]]
+        for i in range(0, len(flat), 200):
+            chunk = [s for s, _ in flat[i:i + 200]]
+            git(self.wt, "mv", "--", *chunk, "note/")
+        for s, d in nested:
+            git(self.wt, "mv", "--", s, d)
+        keep = os.path.join(self.wt, "note", ".gitkeep")
+        if not os.path.exists(keep):
+            open(keep, "w").close()
+        say(f"  moved {len(moves)} page(s) to note/; kept {len(kept)} listed "
+            f"page(s) in topic/; {len(missing)} listed title(s) have no page yet"
+            + (": " + ", ".join(missing) if missing else ""))
+        self.commit_step(
+            1, ["topic", "note"],
+            f"Migrate: move {len(moves)} per-source pages from topic/ to note/",
+            "Only the titles listed in topics.md stay in topic/. Links resolve\n"
+            "by basename, so nothing that points at these pages changes.")
+
+    # -- step 2: topics.md -----------------------------------------------------
+    def step2(self):
+        say("== step 2: seed topics.md")
+        src = read_text(self.args.topics_file)
+        dst = os.path.join(self.wt, self.meta.TOPICS_FILE)
+        cur = read_text(dst) if os.path.exists(dst) else None
+        if cur == src:
+            say(f"  topics.md already matches {self.args.topics_file}")
+        else:
+            write_text(dst, src, self.meta)
+            say(f"  wrote topics.md ({len(self.topics)} topics) from "
+                f"{self.args.topics_file}")
+        self.commit_step(2, [self.meta.TOPICS_FILE],
+                         f"Migrate: seed topics.md ({len(self.topics)} topics)",
+                         "The fixed topic list; topic/ holds exactly these titles.")
+
+    # -- step 3: backfill topics: ------------------------------------------------
+    def step3(self):
+        say("== step 3: backfill topics: on untagged summaries")
+        self.print_section_map()
+        v = self.vault()
+        # (a) declared provenance of the listed compiled pages, in list order.
+        sig_a = defaultdict(list)
+        listed_pages = {}
+        for p in v.authored():
+            t = self.listed_title(p["title"])
+            if t:
+                listed_pages.setdefault(t["slug"], p)
+        for t in self.topics:
+            p = listed_pages.get(t["slug"])
+            if not p:
+                continue
+            for s in p["sources"]:
+                sig_a[s].append(t["slug"])
+        # (b) the note that cites each summary, and its index.md section.
+        cited_by = defaultdict(list)
+        for p in v.authored():
+            if self.listed_title(p["title"]):
+                continue
+            for s in p["sources"]:
+                cited_by[s].append(nfc(p["title"]))
+        for s in cited_by:
+            cited_by[s].sort(key=lambda x: (tkey(x), x))
+        section_of = {}
+        idx_path = os.path.join(self.wt, "index.md")
+        if os.path.exists(idx_path):
+            _, sections = parse_index(read_text(idx_path))
+            for sec in sections:
+                for _, target in sec["entries"]:
+                    section_of.setdefault(tkey(target), sec["heading"])
+                    if "#" in target:
+                        section_of.setdefault(tkey(target.split("#", 1)[0].strip()),
+                                              sec["heading"])
+
+        summaries = sorted((p for p in v.pages.values() if p["kind"] == "summary"),
+                           key=lambda p: p["key"])
+        already = sum(1 for p in summaries if p["topics"])
+        primary_count = Counter()
+        any_count = Counter()
+        signal_count = Counter()
+        multi_cited = []
+        misc_list = []
+        written = skipped = 0
+        for p in summaries:
+            if p["topics"]:
+                for i, s in enumerate(p["topics"]):
+                    any_count[s] += 1
+                    if i == 0:
+                        primary_count[s] += 1
+                continue
+            chosen, first = [], None
+            for slug in sig_a.get(p["key"], []):
+                if slug not in chosen and len(chosen) < self.meta.MAX_TOPICS:
+                    chosen.append(slug)
+                    first = first or "a"
+            if len(chosen) < self.meta.MAX_TOPICS and cited_by.get(p["key"]):
+                notes = cited_by[p["key"]]
+                if len(notes) > 1:
+                    multi_cited.append((p["key"], notes))
+                heading = section_of.get(tkey(notes[0]))
+                if heading is not None:
+                    slug = self.section_slug(heading)
+                    if slug and slug != self.misc and slug not in chosen:
+                        chosen.append(slug)
+                        first = first or "b"
+            if not chosen:
+                chosen = [self.misc]
+                first = "c"
+            signal_count[first] += 1
+            for i, s in enumerate(chosen):
+                any_count[s] += 1
+                if i == 0:
+                    primary_count[s] += 1
+            if chosen == [self.misc]:
+                title = p["meta"].get("title") or ""
+                if not isinstance(title, str):
+                    title = " ".join(str(x) for x in title)
+                misc_list.append((p["key"], title))
+            path = os.path.join(self.wt, p["path"])
+            try:
+                text = read_text(path)
+            except (OSError, UnicodeDecodeError) as exc:
+                warn(f"{p['path']}: cannot read ({exc}); left untagged")
+                skipped += 1
+                continue
+            write_text(path, self.meta.set_key(text, self.meta.TOPICS_KEY, chosen),
+                       self.meta)
+            written += 1
+
+        say(f"  {len(summaries)} summaries: {already} already tagged, "
+            f"{written} backfilled, {skipped} skipped")
+        say(f"  primary signal: (a) compiled provenance {signal_count['a']}, "
+            f"(b) index section {signal_count['b']}, (c) misc {signal_count['c']}")
+        if multi_cited:
+            say(f"  {len(multi_cited)} summar{'y is' if len(multi_cited) == 1 else 'ies are'} "
+                f"cited by more than one note; the first by title was used:")
+            for key, notes in multi_cited[:10]:
+                say(f"    {key}: {notes[0]!r} (of {len(notes)})")
+            if len(multi_cited) > 10:
+                say(f"    … and {len(multi_cited) - 10} more")
+        say(f"  {'slug':<32} {'primary':>7} {'any':>5}")
+        for t in self.topics:
+            say(f"  {t['slug']:<32} {primary_count[t['slug']]:>7} {any_count[t['slug']]:>5}")
+        unlisted = sorted(s for s in any_count if s not in self.by_slug)
+        if unlisted:
+            warn(f"summaries carry slugs not in the list: {', '.join(unlisted)}")
+        say(f"  {self.misc}: {len(misc_list)} newly filed")
+        for key, title in misc_list:
+            say(f"    {key}  {title}")
+        self.commit_step(
+            3, ["summary"],
+            f"Migrate: backfill topics: on {written} summaries",
+            f"Signals, in priority order: (a) declared provenance of a listed\n"
+            f"compiled page ({signal_count['a']}), (b) the index.md section of\n"
+            f"the summary's note ({signal_count['b']}), (c) {self.misc} "
+            f"({signal_count['c']}).\n{already} summaries were already tagged "
+            f"and are untouched.")
+
+    # -- step 4: index.md ------------------------------------------------------
+    def step4(self):
+        say("== step 4: restructure index.md into topic sections")
+        self.print_section_map()
+        idx_path = os.path.join(self.wt, "index.md")
+        if not os.path.exists(idx_path):
+            raise Fail("no index.md in the worktree")
+        old_text = read_text(idx_path)
+        _, sections = parse_index(old_text)
+        v = self.vault()
+        original = []
+        dropped = []
+        buckets = defaultdict(list)
+        warnings = []
+        for sec in sections:
+            for line, target in sec["entries"]:
+                if self.listed_title(target) or self.listed_title(target.split("#", 1)[0]):
+                    dropped.append((sec["heading"], target))
+                    continue
+                original.append(line)
+                slug, why = self._file_entry(v, target)
+                if why:
+                    warnings.append(f"{target!r} (in {sec['heading']!r}): {why}")
+                buckets[slug].append(line)
+        out_entries = [ln for t in self.topics for ln in buckets[t["slug"]]]
+        stray = [s for s in buckets if s not in self.by_slug]
+        if stray:
+            raise Fail(f"entries filed under unlisted slug(s): {stray}")
+        if Counter(out_entries) != Counter(original):
+            lost = list((Counter(original) - Counter(out_entries)).elements())
+            extra = list((Counter(out_entries) - Counter(original)).elements())
+            raise Fail(f"index.md entry count mismatch: {len(original)} in, "
+                       f"{len(out_entries)} out; lost {lost[:3]} extra {extra[:3]}")
+        for w in warnings:
+            warn(f"index.md entry {w}; filed under {self.by_slug[self.misc]['title']}")
+        say(f"  {len(original) + len(dropped)} entries in "
+            f"({len(sections)} sections); {len(dropped)} dropped (listed topic "
+            f"titles, now under '## {TOPICS_SECTION}'); {len(out_entries)} out, "
+            f"each exactly once")
+        for h, t in dropped:
+            say(f"    dropped from {h!r}: [[{t}]]")
+        lines = [INDEX_TITLE, "", INDEX_INTRO, "", f"## {TOPICS_SECTION}", ""]
+        for t in self.topics:
+            lines.append(f"- [[{t['title']}]] — {t['scope']}")
+        lines.append("")
+        for t in self.topics:
+            lines += [f"## {t['title']}", "", f"[[{t['title']}]] — {t['scope']}", ""]
+            if buckets[t["slug"]]:
+                lines += buckets[t["slug"]]
+                lines.append("")
+        new_text = "\n".join(lines).rstrip("\n") + "\n"
+        if new_text == old_text:
+            say("  index.md already in topic form")
+        else:
+            write_text(idx_path, new_text, self.meta)
+        for t in self.topics:
+            say(f"  {len(buckets[t['slug']]):>5}  {t['title']}")
+        self.commit_step(
+            4, ["index.md"],
+            f"Migrate: restructure index.md into {len(self.topics)} topic sections",
+            f"{len(out_entries)} entries re-filed under their note's primary topic;\n"
+            f"{len(dropped)} entries for compiled pages moved to '## {TOPICS_SECTION}'.\n"
+            f"Every other original entry line is kept exactly once.")
+
+    def _file_entry(self, v, target):
+        """(slug, warning-or-None) for one index entry's target."""
+        key = v.resolve(target)
+        if key is None and "#" in target:
+            key = v.resolve(target.split("#", 1)[0].strip())
+        page = v.pages.get(key) if key else None
+        if page is None or page["kind"] not in ("note", "topic"):
+            return self.misc, "no note page found"
+        for s in page["sources"]:
+            sp = v.pages.get(s)
+            if sp and sp["topics"]:
+                primary = sp["topics"][0]
+                if primary in self.by_slug:
+                    return primary, None
+                return self.misc, f"summary {s} has unlisted topic {primary!r}"
+        if not page["sources"]:
+            return self.misc, "its note cites no summary"
+        return self.misc, "its summary has no topics:"
+
+    # -- step 5: CLAUDE.md -----------------------------------------------------
+    def step5(self):
+        say("== step 5: rewrite the schema sections of CLAUDE.md")
+        asset = read_text(self.args.schema_file)
+        path = os.path.join(self.wt, "CLAUDE.md")
+        cur = read_text(path) if os.path.exists(path) else ""
+        asset_h2 = {H2_RE.match(l).group(1) for l in asset.split("\n") if H2_RE.match(l)}
+        lines = cur.split("\n")
+        tail_at, fallback_at, in_fence = None, None, False
+        for i, line in enumerate(lines):
+            if FENCE_RE.match(line):
+                in_fence = not in_fence
+                continue
+            if in_fence:
+                continue
+            if line.rstrip() in TAIL_HEADINGS and tail_at is None:
+                tail_at = i
+                break
+            m = H2_RE.match(line)
+            if m and m.group(1) not in asset_h2 and fallback_at is None:
+                fallback_at = i
+        if tail_at is None and fallback_at is not None:
+            tail_at = fallback_at
+            warn(f"CLAUDE.md has none of {', '.join(TAIL_HEADINGS)}; keeping "
+                 f"from {lines[tail_at].strip()!r} onward")
+        if tail_at is None:
+            if cur:
+                warn("CLAUDE.md has no section of its own to keep; replaced "
+                     "wholesale with the template")
+            new = asset
+            kept = "nothing"
+        else:
+            tail = "\n".join(lines[tail_at:])
+            new = asset.rstrip("\n") + "\n\n" + tail
+            kept = lines[tail_at].strip()
+        if not new.endswith("\n"):
+            new += "\n"
+        if new == cur:
+            say(f"  CLAUDE.md already current (kept from {kept!r})")
+        else:
+            write_text(path, new, self.meta)
+            say(f"  schema sections replaced from {self.args.schema_file}; "
+                f"kept the wiki's own sections from {kept!r}")
+        self.commit_step(
+            5, ["CLAUDE.md"],
+            "Migrate: rewrite the schema sections of CLAUDE.md for topics",
+            "Tiers, topics rule and index rule from the plugin template; the\n"
+            "wiki's own Workflows/Relationship/Principles sections kept verbatim.")
+
+    STEPS = {1: step1, 2: step2, 3: step3, 4: step4, 5: step5}
+
+    def run(self, steps):
+        self.open_worktree()
+        try:
+            for n in steps:
+                self.STEPS[n](self)
+            self.finish()
+        finally:
+            self.close_worktree()
+
+
+# --- CLI ----------------------------------------------------------------------
+
+def build_parser():
+    p = argparse.ArgumentParser(
+        prog=PROG,
+        description="Migrate a 2.x wiki to fixed topics, on a branch, one commit per step.",
+        epilog="Exit: 0 ok, 2 usage/config, 4 git failed, 5 a step's assertion failed.")
+    p.add_argument("--wiki", help="wiki root (default: $WIKI_PATH)")
+    p.add_argument("--branch", help="branch to build (default: curate/topics-<date>)")
+    p.add_argument("--topics-file", default=os.path.join(ASSETS, "topics.md"),
+                   help="the topics.md to seed (default: the plugin's assets/topics.md)")
+    p.add_argument("--schema-file", default=os.path.join(ASSETS, "wiki-CLAUDE.md"),
+                   help="the CLAUDE.md template (default: the plugin's assets/wiki-CLAUDE.md)")
+    p.add_argument("--step", action="append", type=int, choices=sorted(Migration.STEPS),
+                   metavar="N", help="run step N (repeatable; steps always run in order)")
+    p.add_argument("--all", action="store_true", help="run every step")
+    p.add_argument("--dry-run", action="store_true",
+                   help="perform the steps in the worktree, print, commit nothing")
+    return p
+
+
+def main(argv=None):
+    args = build_parser().parse_args(argv)
+    try:
+        wiki = args.wiki or os.environ.get("WIKI_PATH")
+        if not wiki:
+            raise Fail("WIKI_PATH is not set and --wiki was not given", code=2)
+        args.wiki = os.path.abspath(os.path.expanduser(wiki))
+        if not os.path.isdir(args.wiki):
+            raise Fail(f"not a directory: {args.wiki}", code=2)
+        if git(args.wiki, "rev-parse", "--git-dir", check=False).returncode != 0:
+            raise Fail(f"not a git repository: {args.wiki}", code=2)
+        if not args.all and not args.step:
+            raise Fail("give --all or at least one --step N", code=2)
+        if not os.path.isfile(args.topics_file):
+            raise Fail(f"no topics file at {args.topics_file}", code=2)
+        if not os.path.isfile(args.schema_file):
+            raise Fail(f"no schema template at {args.schema_file}", code=2)
+        if not args.branch:
+            args.branch = "curate/topics-" + _dt.date.today().strftime("%Y%m%d")
+        steps = sorted(Migration.STEPS) if args.all else sorted(set(args.step))
+        meta = _load("wiki_meta", "wiki-meta")
+        curate = _load("wiki_curate", "wiki-curate")
+        try:
+            m = Migration(args, meta, curate)
+        except meta.MetaError as exc:
+            raise Fail(f"{args.topics_file}: {exc}", code=2)
+        m.run(steps)
+        return 0
+    except Fail as exc:
+        print(f"{PROG}: {exc}", file=sys.stderr)
+        return exc.code
+
+
+if __name__ == "__main__":
+    sys.exit(main())
