@@ -365,9 +365,8 @@ fi
 git -C "$WT" commit --quiet -m "Compile topic/$THEME from $N_SRC sources
 
 Rebuilt as a derived artifact rather than appended to, so stale claims and
-duplicated passages could be revised. Provenance: $PROV.
-
-Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
+duplicated passages could be revised. Provenance: $PROV." \
+  --author="wiki-compile <noreply@wiki-ingest>"
 
 # Advance the branch to the commit we just built detached. update-ref, NOT
 # `branch -f`: branch -f refuses to move a branch that is checked out in any

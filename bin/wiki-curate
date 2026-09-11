@@ -287,7 +287,8 @@ class Vault:
             # the theme's whole bibliography -- inheriting it transitively is
             # what made one company's page claim 269 sources. Measured on the
             # live corpus: median reconstructed set 59 -> 8, and the 14 hubs
-            # above the plausibility cap drop to 0.
+            # that had over 120 reconstructed sources drop to 0. (Only legacy
+            # pages are reconstructed now; listed topics use topics: tags.)
             recon = set()
             for r in p["resolved"]:
                 nb = self.pages.get(r)
