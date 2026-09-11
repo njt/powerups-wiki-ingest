@@ -26,6 +26,17 @@
 # Each case below carries the evidence of the original failure, because that is
 # what says which detail of the assertion is load-bearing.
 #
+# TOPICS (3.0). The second half runs against a second throwaway wiki that has
+# topics.md, `topics:` on its digests and a note/ tier. It asserts the compile
+# is list-driven: a listed topic with no page is bootstrapped, an unlisted
+# theme is refused with exit 3, the source set is `topics:` membership (a
+# secondary tag counts, and it is read from the BRANCH so a retag branch is
+# seen), wiki-recompile with no arguments walks the list in order and nothing
+# else, and wiki-review reports a topic/ -> note/ move as moved, not as a
+# deleted page that dropped every link it had. The migration-shaped case (a
+# legacy wiki whose topics.md exists only on the branch) runs first, while the
+# legacy fixture is still current.
+#
 # Targets bash 3.2 (macOS /bin/bash): no mapfile, no associative arrays, no
 # negative indexing.
 
@@ -57,15 +68,16 @@ DRY_CTX_PREEXISTED=0
 # temp dir goes away, so no stale worktree metadata is left in the sandbox repo
 # and no directory survives the run.
 cleanup_all() {
-  if [ -d "$WIKI_PATH/.git" ]; then
-    git -C "$WIKI_PATH" worktree list --porcelain 2>/dev/null \
+  for wk in "$SANDBOX/wiki" "$SANDBOX/wiki-topics"; do
+    [ -d "$wk/.git" ] || continue
+    git -C "$wk" worktree list --porcelain 2>/dev/null \
       | awk '/^worktree /{print $2}' \
       | while read -r w; do
-          [ "$w" = "$WIKI_PATH" ] && continue
-          git -C "$WIKI_PATH" worktree remove --force "$w" >/dev/null 2>&1 || true
+          [ "$w" = "$wk" ] && continue
+          git -C "$wk" worktree remove --force "$w" >/dev/null 2>&1 || true
         done
-    git -C "$WIKI_PATH" worktree prune >/dev/null 2>&1 || true
-  fi
+    git -C "$wk" worktree prune >/dev/null 2>&1 || true
+  done
   rm -rf "$SANDBOX"
   [ "$DRY_CTX_PREEXISTED" = 0 ] && rm -f "$DRY_CTX"
   return 0
@@ -106,6 +118,8 @@ if [ -n "${STUB_MODE_MAP:-}" ] && [ -f "$STUB_MODE_MAP" ]; then
 fi
 
 [ -n "${STUB_LOG:-}" ] && printf '%s|%s\n' "$page" "$mode" >> "$STUB_LOG"
+# The whole prompt, for cases that assert on what the model was TOLD.
+[ -n "${STUB_PROMPT:-}" ] && printf '%s' "$prompt" > "$STUB_PROMPT"
 
 # 300 filler words: comfortably over wiki-compile's 250-word floor, so the
 # short-page case fails for its own reason and not by accident.
@@ -224,8 +238,12 @@ git -C "$W" add -A
 git -C "$W" commit -q -m "Seed the fixture wiki"
 
 MAIN_AT_START=$(git -C "$W" rev-parse main)
-ORIG_TEST_THEME=$(git -C "$W" rev-parse "main:topic/Test Theme.md")
-ORIG_UNTOUCHED=$(git -C "$W" rev-parse "main:topic/Untouched Page.md")
+# The two pages the pristine check pins. Paths, because the topics-mode fixture
+# below keeps its control page in note/.
+THEME_REL="topic/Test Theme.md"
+CONTROL_REL="topic/Untouched Page.md"
+ORIG_TEST_THEME=$(git -C "$W" rev-parse "main:$THEME_REL")
+ORIG_UNTOUCHED=$(git -C "$W" rev-parse "main:$CONTROL_REL")
 
 # --- assertion helpers ---------------------------------------------------------
 check() {  # check <label> <expected-rc> <actual-rc>
@@ -258,9 +276,9 @@ assert_live_checkout_pristine() {  # <label>
     || { echo "FAIL: $1 — main advanced to $(git -C "$W" rev-parse main)"; fail=1; }
   [ -z "$(git -C "$W" status --porcelain)" ] \
     || { echo "FAIL: $1 — live working tree is dirty: $(git -C "$W" status --porcelain | tr '\n' ' ')"; fail=1; }
-  [ "$(blob_of main "topic/Test Theme.md")" = "$ORIG_TEST_THEME" ] \
-    || { echo "FAIL: $1 — topic/Test Theme.md on main is not the original"; fail=1; }
-  [ "$(blob_of main "topic/Untouched Page.md")" = "$ORIG_UNTOUCHED" ] \
+  [ "$(blob_of main "$THEME_REL")" = "$ORIG_TEST_THEME" ] \
+    || { echo "FAIL: $1 — $THEME_REL on main is not the original"; fail=1; }
+  [ "$(blob_of main "$CONTROL_REL")" = "$ORIG_UNTOUCHED" ] \
     || { echo "FAIL: $1 — the control page changed"; fail=1; }
 }
 
@@ -665,6 +683,323 @@ RC=$?
 check "recompile-blank: an all-blank themes-file is refused" 3 "$RC"
 assert "recompile-blank: it says why" \
   "$(grep -q 'nothing to compile' "$SANDBOX/out.blank"; echo $?)"
+
+# --- branch fixtures -----------------------------------------------------------
+# make_branch <wiki> <branch> <fn>: run <fn> with a detached worktree of main as
+# CWD, commit everything it did, and point <branch> at the result. The live
+# checkout is never touched, the same way the tools under test never touch it.
+make_branch() {
+  mk_wiki="$1"; mk_br="$2"; mk_fn="$3"
+  mk_name="${mk_br//\//-}"; mk_wt="$SANDBOX/mk-$mk_name"
+  git -C "$mk_wiki" worktree add --quiet --detach "$mk_wt" main \
+    || { echo "FAIL: fixture — could not open a worktree for $mk_br"; fail=1; return; }
+  ( cd "$mk_wt" && "$mk_fn" )
+  git -C "$mk_wt" add -A
+  git -C "$mk_wt" commit -q -m "fixture: $mk_br"
+  git -C "$mk_wiki" update-ref "refs/heads/$mk_br" "$(git -C "$mk_wt" rev-parse HEAD)"
+  git -C "$mk_wiki" worktree remove --force "$mk_wt"
+}
+
+# Digest with a `topics:` list. digest <slug> <form:block|flow> <slug...>
+digest() {
+  d_slug="$1"; d_form="$2"; shift 2
+  { printf -- '---\nurl: https://example.invalid/%s\ntitle: "%s"\n' "$d_slug" "$d_slug"
+    if [ "$d_form" = flow ]; then
+      printf 'topics: [%s]\n' "$(printf '%s, ' "$@" | sed 's/, $//')"
+    else
+      printf 'topics:\n'; for t in "$@"; do printf '  - %s\n' "$t"; done
+    fi
+    printf -- '---\n\nA precis of %s. ' "$d_slug"; words 60 "s"; printf '\n'; } \
+    > "summary/$d_slug.md"
+}
+
+echo ""
+echo "=== topics: migration-shaped branch on the legacy wiki ==="
+
+# =============================================================================
+# Case 8 — topics.md exists only on the BRANCH. This is the migration: main has
+# no topics.md, the branch has one plus `topics:` on two digests, and
+# wiki-recompile onto that branch must select from the branch (the listed topic
+# and nothing else), not from main's legacy theme list. Selecting from main
+# would have compiled Other Theme / Fail Theme / ARIES here.
+# =============================================================================
+mig_fixture() {
+  printf '| slug | title | scope |\n|---|---|---|\n' > topics.md
+  printf '| test-topic | Test Theme | Scope sentence for the test topic. |\n' >> topics.md
+  printf '| misc | Miscellany | Anything else. |\n' >> topics.md
+  digest alpha block test-topic
+  digest beta  block test-topic
+}
+make_branch "$W" curate/mig mig_fixture
+: > "$STUB_LOG"
+STUB_REV=21 "$BIN/wiki-recompile" --branch curate/mig >"$SANDBOX/out.mig" 2>&1
+check "migration-branch: recompile onto a branch that carries topics.md" 0 "$?"
+[ "$(tr '\n' ' ' < "$STUB_LOG")" = "topic/Test Theme.md|good " ] \
+  || { echo "FAIL: migration-branch — selection did not come from the branch: $(tr '\n' ' ' < "$STUB_LOG")"; fail=1; }
+grep -q '^compiled 1   skipped 1   failed 0' "$SANDBOX/out.mig" \
+  || { echo "FAIL: migration-branch — wrong tally: $(grep -E '^compiled ' "$SANDBOX/out.mig")"; fail=1; }
+[ ! -f "$W/topics.md" ] \
+  || { echo "FAIL: migration-branch — topics.md leaked into the live checkout"; fail=1; }
+echo "ok: migration-branch: only the listed topic compiled, selected from the branch"
+assert_no_stray_worktrees "migration-branch"
+assert_live_checkout_pristine "migration-branch"
+
+echo ""
+echo "=== topics: wiki with topics.md ==="
+
+# --- topics fixture ------------------------------------------------------------
+# A second wiki, so the legacy fixture's pristine checks stay exact. Three
+# topics: one with a page (Test Theme), one without (Fresh Topic), and misc.
+# Membership is declared by the digests, block and flow form both:
+#   Test Theme  <- alpha, beta, delta (delta names it SECOND)
+#   Fresh Topic <- gamma, delta
+#   misc        <- epsilon (one member: wiki-compile must skip it)
+# note/ holds the two cross-link targets and a legacy multi-source page that
+# has the shape of a compiled theme but is not on the list.
+W2="$SANDBOX/wiki-topics"
+mkdir -p "$W2/topic" "$W2/note" "$W2/summary" "$W2/raw"
+git init -q "$W2"
+git -C "$W2" symbolic-ref HEAD refs/heads/main
+git -C "$W2" config user.email "test@wiki-ingest.invalid"
+git -C "$W2" config user.name "wiki-ingest test"
+: > "$W2/index.md"; : > "$W2/log.md"
+{ printf '# Topics\n\nProse the tools ignore.\n\n'
+  printf '| slug | title | scope |\n|---|---|---|\n'
+  printf '| test-topic | Test Theme | Scope sentence for the test topic. |\n'
+  printf '| fresh-topic | Fresh Topic | A topic that has no page yet. |\n'
+  printf '| misc | Miscellany | Anything else. |\n'; } > "$W2/topics.md"
+( cd "$W2" \
+  && digest alpha   block test-topic \
+  && digest beta    flow  test-topic \
+  && digest gamma   block fresh-topic \
+  && digest delta   block fresh-topic test-topic \
+  && digest epsilon block misc )
+for s in alpha beta gamma delta epsilon; do
+  printf -- '---\nurl: https://example.invalid/%s\n---\n\nVerbatim %s.\n' "$s" "$s" > "$W2/raw/$s.md"
+done
+seed_page() {  # seed_page <path> <title> <src-a> <src-b>
+  { printf '# %s\n\nThe pre-compile version of this page.\n\n' "$2"
+    printf 'It sits beside [[Untouched Page]] and [[Neighbour Page]].\n\n'
+    words 300 "orig"; printf '\n\n'
+    printf '*Compiled from 2 sources: [[summary/%s]], [[summary/%s]]*\n' "$3" "$4"
+  } > "$1"
+}
+seed_page "$W2/topic/Test Theme.md" "Test Theme" alpha beta
+seed_page "$W2/note/Legacy Multi.md" "Legacy Multi" alpha gamma
+printf '# Untouched Page\n\nThis page must never change.\n' > "$W2/note/Untouched Page.md"
+printf '# Neighbour Page\n\nThe far end of a cross-link.\n' > "$W2/note/Neighbour Page.md"
+# The note behind digest delta. Its *Sources:* footer is what ties it to the
+# digest; case 11 asserts the compile context names it so the compiler can link
+# it (a digest never names its note, and a first compile saw none — rehearsal
+# 2026-09-11: a new 17-source page with zero cross-links).
+printf '# Delta Note\n\nThe analysis of delta.\n\n---\n*Sources: [[raw/delta]], [[summary/delta]]*\n' > "$W2/note/Delta Note.md"
+git -C "$W2" add -A
+git -C "$W2" commit -q -m "Seed the topics fixture wiki"
+
+# Re-point every helper at the topics wiki.
+W="$W2"; export WIKI_PATH="$W2"
+W_REAL=$(cd "$W" && pwd -P)
+MAIN_AT_START=$(git -C "$W" rev-parse main)
+THEME_REL="topic/Test Theme.md"
+CONTROL_REL="note/Untouched Page.md"
+ORIG_TEST_THEME=$(git -C "$W" rev-parse "main:$THEME_REL")
+ORIG_UNTOUCHED=$(git -C "$W" rev-parse "main:$CONTROL_REL")
+export STUB_PROMPT="$SANDBOX/stub-prompt.txt"
+
+# =============================================================================
+# Case 9 — bootstrap. A listed topic with no page compiles: the page is created
+# on the branch, and the footer is exactly the tagged members (sorted), which
+# is the only way it can be right because there was no page to inherit from.
+# =============================================================================
+rm -f "$STUB_WROTE" "$STUB_PROMPT"
+run_compile boot --theme "Fresh Topic" --branch curate/boot
+check "bootstrap: a listed topic with no page compiles" 0 "$RC"
+grep -q 'first compile' "$SANDBOX/all.boot" \
+  || { echo "FAIL: bootstrap — output does not say it was a first compile: $(cat "$SANDBOX/all.boot")"; fail=1; }
+[ "$(commit_files curate/boot)" = "topic/Fresh Topic.md" ] \
+  || { echo "FAIL: bootstrap — commit touched: $(commit_files curate/boot | tr '\n' ' ')"; fail=1; }
+bootfoot=$(git -C "$W" show "curate/boot:topic/Fresh Topic.md" 2>/dev/null | grep '^\*Compiled from ')
+[ "$bootfoot" = "*Compiled from 2 sources: [[summary/delta]], [[summary/gamma]]*" ] \
+  && echo "ok: bootstrap: footer lists exactly the tagged members" \
+  || { echo "FAIL: bootstrap — footer is '$bootfoot'"; fail=1; }
+grep -q 'first compile of this topic' "$STUB_PROMPT" \
+  || { echo "FAIL: bootstrap — the prompt did not tell the model the page is new"; fail=1; }
+[ ! -e "$W/topic/Fresh Topic.md" ] \
+  || { echo "FAIL: bootstrap — the new page appeared in the live checkout"; fail=1; }
+assert_no_stray_worktrees "bootstrap"
+assert_live_checkout_pristine "bootstrap"
+
+# By slug as well as by title.
+run_compile bootslug --theme fresh-topic --branch curate/boot-slug
+check "bootstrap: the topic resolves by slug too" 0 "$RC"
+[ "$(commit_files curate/boot-slug)" = "topic/Fresh Topic.md" ] \
+  || { echo "FAIL: bootstrap-slug — commit touched: $(commit_files curate/boot-slug | tr '\n' ' ')"; fail=1; }
+
+# The dead-model check must work on a first compile too: a model that writes
+# nothing has to read as "the model never wrote" (exit 6), not as a validation
+# failure on a missing page (exit 5). Both fail, but only one names the actual
+# problem. (The seed is not the only thing holding this up -- `touch -t` on the
+# back-dating line creates a missing file as well -- which is why the mutation
+# that skips the seed is caught by the first-compile assertions above, not here.)
+rm -f "$STUB_WROTE"
+STUB_MODE=nothing run_compile bootsilent --theme "Fresh Topic" --branch curate/boot-silent
+check "bootstrap: a dead model on a first compile exits 6, not 5" 6 "$RC"
+assert "bootstrap: it says the model never wrote the (seeded) page" \
+  "$(grep -q 'the model never wrote topic/Fresh Topic.md (file untouched)' "$SANDBOX/all.bootsilent"; echo $?)"
+branch_exists curate/boot-silent \
+  && { echo "FAIL: bootstrap-silent — a branch was created"; fail=1; }
+assert_live_checkout_pristine "bootstrap-silent"
+
+# =============================================================================
+# Case 10 — an unlisted theme is refused: exit 3, wiki-curate's message, the
+# model never runs. A legacy multi-source page in note/ has exactly the shape
+# the old compiler accepted, so it is the theme to try.
+# =============================================================================
+run_compile unlisted --theme "Legacy Multi" --branch curate/unlisted
+check "unlisted: a note/ page that looks like a theme is refused" 3 "$RC"
+grep -q 'not a listed topic; add it to topics.md and retag' "$SANDBOX/all.unlisted" \
+  || { echo "FAIL: unlisted — wrong message: $(cat "$SANDBOX/all.unlisted")"; fail=1; }
+[ ! -s "$STUB_LOG" ] \
+  || { echo "FAIL: unlisted — the CLI was invoked"; fail=1; }
+branch_exists curate/unlisted \
+  && { echo "FAIL: unlisted — a branch was created"; fail=1; }
+echo "ok: unlisted: refused with the topics.md message, model never invoked"
+run_compile unlisted2 --theme "No Such Topic" --branch curate/unlisted2
+check "unlisted: an unknown name is refused the same way" 3 "$RC"
+grep -q 'not a listed topic' "$SANDBOX/all.unlisted2" \
+  || { echo "FAIL: unlisted2 — wrong message: $(cat "$SANDBOX/all.unlisted2")"; fail=1; }
+# misc has one member: the 2-source floor still applies to a listed topic.
+run_compile misc1 --theme misc --branch curate/misc
+check "unlisted: a listed topic with one member is skipped (exit 3)" 3 "$RC"
+grep -q 'has 1 source(s); a theme page needs 2+' "$SANDBOX/all.misc1" \
+  || { echo "FAIL: misc — wrong message: $(cat "$SANDBOX/all.misc1")"; fail=1; }
+assert_no_stray_worktrees "unlisted"
+assert_live_checkout_pristine "unlisted"
+
+# =============================================================================
+# Case 11 — the source set is `topics:` membership in either position, and the
+# prompt carries the scope line. delta names test-topic SECOND; it must be in
+# the context and in the footer.
+# =============================================================================
+run_compile ctx --theme "Test Theme" --branch curate/ctx --dry-run
+check "secondary: dry-run assembles the context" 0 "$RC"
+grep -q '^## SOURCE: summary/delta.md' "$DRY_CTX" \
+  && echo "ok: secondary: a digest that names the topic second is in the context" \
+  || { echo "FAIL: secondary — summary/delta.md is missing from the context"; fail=1; }
+grep -q '^Digests: 3\.' "$DRY_CTX" \
+  || { echo "FAIL: secondary — context header does not count 3 digests: $(head -3 "$DRY_CTX")"; fail=1; }
+# The note behind delta is named right under delta's SOURCE heading, and a
+# digest with no note gets no such line.
+awk '/^## SOURCE: summary\/delta\.md/{f=1;next} f&&/^## SOURCE/{exit} f&&/^Note page: \[\[Delta Note\]\]$/{found=1} END{exit !found}' "$DRY_CTX" \
+  && echo "ok: notes: the context names the note behind digest delta" \
+  || { echo "FAIL: notes — no 'Note page: [[Delta Note]]' under summary/delta.md in the context"; fail=1; }
+# Legacy Multi cites alpha (and gamma, which is not a member), so alpha's block
+# names it; beta is cited by nothing and gets no line. Exactly two lines in all.
+awk '/^## SOURCE: summary\/alpha\.md/{f=1;next} f&&/^## SOURCE/{exit} f&&/^Note page: \[\[Legacy Multi\]\]$/{found=1} END{exit !found}' "$DRY_CTX" \
+  || { echo "FAIL: notes — alpha's block does not name [[Legacy Multi]]"; fail=1; }
+[ "$(grep -c '^Note page:' "$DRY_CTX")" = 2 ] \
+  || { echo "FAIL: notes — expected exactly two Note page lines, got $(grep -c '^Note page:' "$DRY_CTX")"; fail=1; }
+rm -f "$STUB_WROTE" "$STUB_PROMPT"
+run_compile scope --theme "Test Theme" --branch curate/scope
+check "scope: a listed topic with a page compiles" 0 "$RC"
+grep -q '^SCOPE: Scope sentence for the test topic\.$' "$STUB_PROMPT" \
+  && echo "ok: scope: the prompt carries the topics.md scope line" \
+  || { echo "FAIL: scope — no SCOPE line in the prompt"; fail=1; }
+grep -q 'names this topic second may be mentioned lightly' "$STUB_PROMPT" \
+  || { echo "FAIL: scope — the secondary-source sentence is missing from the prompt"; fail=1; }
+grep -q 'Note page: \[\[Title\]\]' "$STUB_PROMPT" \
+  || { echo "FAIL: scope — the prompt does not explain the Note page lines"; fail=1; }
+grep -q 'PRESERVE EVERY EXISTING LINK' "$STUB_PROMPT" \
+  || { echo "FAIL: scope — the link-preservation rule went missing from the prompt"; fail=1; }
+scopefoot=$(git -C "$W" show "curate/scope:topic/Test Theme.md" 2>/dev/null | grep '^\*Compiled from ')
+[ "$scopefoot" = "*Compiled from 3 sources: [[summary/alpha]], [[summary/beta]], [[summary/delta]]*" ] \
+  && echo "ok: secondary: the footer lists all three members" \
+  || { echo "FAIL: secondary — footer is '$scopefoot'"; fail=1; }
+assert_live_checkout_pristine "scope"
+
+# The link-preservation gate still bites in topics mode.
+gate_case topicdrop drop-one-link 'cross-link(s)'
+
+# =============================================================================
+# Case 12 — the source set is read from the BRANCH. A retag branch moves
+# epsilon from misc to fresh-topic; compiling Fresh Topic onto that branch must
+# see three members, which main's digests do not say.
+# =============================================================================
+retag_fixture() { digest epsilon block fresh-topic; }
+make_branch "$W" curate/retagged retag_fixture
+run_compile retag --theme "Fresh Topic" --branch curate/retagged
+check "retag-branch: compile onto a branch whose digests were retagged" 0 "$RC"
+retagfoot=$(git -C "$W" show "curate/retagged:topic/Fresh Topic.md" 2>/dev/null | grep '^\*Compiled from ')
+[ "$retagfoot" = "*Compiled from 3 sources: [[summary/delta]], [[summary/epsilon]], [[summary/gamma]]*" ] \
+  && echo "ok: retag-branch: the source set came from the branch, not the live checkout" \
+  || { echo "FAIL: retag-branch — footer is '$retagfoot'"; fail=1; }
+assert_no_stray_worktrees "retag-branch"
+assert_live_checkout_pristine "retag-branch"
+
+# =============================================================================
+# Case 13 — wiki-recompile with no arguments: every listed topic, in topics.md
+# order, and nothing else. Miscellany is offered and skipped by the compiler's
+# floor; Legacy Multi in note/ is never offered at all.
+# =============================================================================
+: > "$STUB_LOG"
+STUB_REV=31 "$BIN/wiki-recompile" --branch curate/all >"$SANDBOX/out.all" 2>&1
+check "recompile-topics: no-args run completes" 0 "$?"
+got=$(cut -d'|' -f1 "$STUB_LOG" | tr '\n' ' ')
+[ "$got" = "topic/Test Theme.md topic/Fresh Topic.md " ] \
+  && echo "ok: recompile-topics: the listed topics, in topics.md order, and nothing else" \
+  || { echo "FAIL: recompile-topics — compiled: $got"; fail=1; }
+grep -q '^compiled 2   skipped 1   failed 0' "$SANDBOX/out.all" \
+  || { echo "FAIL: recompile-topics — wrong tally: $(grep -E '^compiled ' "$SANDBOX/out.all")"; fail=1; }
+grep -q 'Legacy Multi' "$STUB_LOG" \
+  && { echo "FAIL: recompile-topics — a legacy note/ page was compiled"; fail=1; }
+changed=$(git -C "$W" diff --name-only "$MAIN_AT_START" curate/all | sort | tr '\n' '|')
+[ "$changed" = "topic/Fresh Topic.md|topic/Test Theme.md|" ] \
+  || { echo "FAIL: recompile-topics — branch changes the wrong set of files: $changed"; fail=1; }
+assert_no_stray_worktrees "recompile-topics"
+assert_live_checkout_pristine "recompile-topics"
+
+# --top caps the list from the front.
+: > "$STUB_LOG"
+STUB_REV=32 "$BIN/wiki-recompile" --top 1 --branch curate/top1 >"$SANDBOX/out.top1" 2>&1
+check "recompile-topics: --top 1" 0 "$?"
+[ "$(cut -d'|' -f1 "$STUB_LOG" | tr '\n' ' ')" = "topic/Test Theme.md " ] \
+  || { echo "FAIL: recompile-topics-top — compiled: $(cut -d'|' -f1 "$STUB_LOG" | tr '\n' ' ')"; fail=1; }
+
+echo ""
+echo "=== wiki-review ==="
+
+# =============================================================================
+# Case 14 — a page moved topic/ -> note/ is reported as MOVED. Before
+# --find-renames, the migration branch (1133 such moves) read as 1133 deleted
+# pages each dropping every link it had. A compile branch with a new page
+# renders that page as new, and the Topics table shows membership.
+# =============================================================================
+move_fixture() { git mv "topic/Test Theme.md" "note/Test Theme.md"; }
+make_branch "$W" curate/moved move_fixture
+"$BIN/wiki-review" --branch curate/moved > "$SANDBOX/review.moved" 2>"$SANDBOX/review.moved.err"
+check "review: renders the moved branch" 0 "$?"
+grep -q '^Moved: 1 file' "$SANDBOX/review.moved" \
+  && echo "ok: review: a topic/ -> note/ move is reported as Moved" \
+  || { echo "FAIL: review — no Moved line: $(cat "$SANDBOX/review.moved" "$SANDBOX/review.moved.err")"; fail=1; }
+grep -q 'Cross-links dropped' "$SANDBOX/review.moved" \
+  && { echo "FAIL: review — the moved page is reported as having dropped its links"; fail=1; }
+grep -q 'Test Theme (deleted)' "$SANDBOX/review.moved" \
+  && { echo "FAIL: review — the moved page is listed as deleted"; fail=1; }
+grep -q '^## Topics' "$SANDBOX/review.moved" \
+  && echo "ok: review: the Topics section renders when the branch has topics.md" \
+  || { echo "FAIL: review — no Topics section"; fail=1; }
+grep -q '^| Fresh Topic | 2→2 (+0) | no |' "$SANDBOX/review.moved" \
+  || { echo "FAIL: review — Fresh Topic membership row wrong: $(grep 'Fresh Topic' "$SANDBOX/review.moved")"; fail=1; }
+
+"$BIN/wiki-review" --branch curate/boot > "$SANDBOX/review.boot" 2>&1
+check "review: renders a bootstrap branch" 0 "$?"
+grep -q '^| Fresh Topic (new) | 0→' "$SANDBOX/review.boot" \
+  && echo "ok: review: the bootstrapped page is listed as new" \
+  || { echo "FAIL: review — bootstrapped page not listed as new: $(grep 'Fresh Topic' "$SANDBOX/review.boot")"; fail=1; }
+grep -q '^| Fresh Topic | 2→2 (+0) | yes |' "$SANDBOX/review.boot" \
+  || { echo "FAIL: review — Topics row does not show the page now exists: $(grep 'Fresh Topic' "$SANDBOX/review.boot")"; fail=1; }
+assert_no_stray_worktrees "review"
+assert_live_checkout_pristine "review"
 
 echo ""
 [ "$fail" = 0 ] && echo "test-compile: ALL PASS"

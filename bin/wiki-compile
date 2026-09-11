@@ -12,15 +12,29 @@
 #   * Nothing is merged. The branch is left for review; `git diff main..BRANCH`
 #     is the deliverable.
 #   * Output is validated before it is committed (page present, provenance
-#     footer present, no conflict markers, not truncated).
+#     footer present, no conflict markers, not truncated, no cross-link lost).
+#
+# Topics (3.0). When the wiki being compiled carries topics.md, --theme must be
+# a listed slug or title (anything else exits 3), the source set is every digest
+# whose `topics:` names it, and the page path comes from the list -- so a topic
+# with no page yet compiles: the worktree gets an empty topic/<Title>.md first
+# and the link-preservation set is empty. Without topics.md the theme is an
+# existing topic page and its sources are its provenance, as before.
+#
+# The source set is resolved against the BRANCH being built (BASE below), not
+# the live checkout: a migration or retag branch carries topics.md and `topics:`
+# lines that main does not have yet, and compiling onto that branch must see them.
+# Off a fresh branch BASE is main, so this is the live checkout's state anyway.
 #
 # Usage:
 #   wiki-compile --theme "Software Engineering Craft"
+#   wiki-compile --theme agent-architecture       # a topics.md slug works too
 #   wiki-compile --theme "..." --dry-run       # build context, skip the LLM
 #   wiki-compile --theme "..." --branch curate/my-run
 #
 # Env: WIKI_PATH (required), WIKI_INGEST_CLI (default: claude)
-# Exit: 0 compiled  2 usage/config  3 no sources  4 LLM failed  5 validation failed
+# Exit: 0 compiled  2 usage/config  3 not a listed topic / too few sources
+#       4 LLM failed  5 validation failed  6 the model never wrote the page
 set -euo pipefail
 # `set -e` aborts silently, which makes a failure in a long unattended batch
 # indistinguishable from a mystery. Say where we died and with what.
@@ -33,45 +47,20 @@ while [ $# -gt 0 ]; do
     --branch)  BRANCH="${2:-}"; shift 2 ;;
     --dry-run) DRY_RUN=1; shift ;;
     --keep)    KEEP=1; shift ;;
-    -h|--help) sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,37p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "wiki-compile: unknown argument: $1" >&2; exit 2 ;;
   esac
 done
 
 [ -n "$THEME" ] || { echo "wiki-compile: --theme is required" >&2; exit 2; }
 [ -n "${WIKI_PATH:-}" ] || { echo "wiki-compile: WIKI_PATH is not set" >&2; exit 2; }
-[ -d "$WIKI_PATH/topic" ] || { echo "wiki-compile: no topic/ under $WIKI_PATH" >&2; exit 2; }
+[ -d "$WIKI_PATH/topic" ] || [ -f "$WIKI_PATH/topics.md" ] \
+  || { echo "wiki-compile: no topic/ under $WIKI_PATH" >&2; exit 2; }
 CLI="${WIKI_INGEST_CLI:-claude}"
 CURATE="$(dirname "$0")/wiki-curate"
 [ -x "$CURATE" ] || { echo "wiki-compile: wiki-curate not found beside me" >&2; exit 2; }
 
 [ -n "$BRANCH" ] || BRANCH="curate/compile-$(date +%Y%m%d)"
-
-# --- Resolve the theme's source set (deterministic, via wiki-curate) ---------
-SRC_JSON="$("$CURATE" sources --theme "$THEME" --json)" || exit 3
-N_SRC=$(printf '%s' "$SRC_JSON" | python3 -c 'import json,sys;print(len(json.load(sys.stdin)["sources"]))')
-PAGE_REL=$(printf '%s' "$SRC_JSON" | python3 -c 'import json,sys;print(json.load(sys.stdin)["path"])')
-PROV=$(printf '%s' "$SRC_JSON" | python3 -c 'import json,sys;print(json.load(sys.stdin)["provenance"])')
-
-if [ "$N_SRC" -lt 2 ]; then
-  echo "wiki-compile: '$THEME' has $N_SRC source(s); a theme page needs 2+." >&2
-  echo "wiki-compile: single-source material belongs in summary/, not topic/." >&2
-  exit 3
-fi
-# Reconstructed provenance unions the digests of every page a hub links to, so a
-# page with many outbound links inherits an implausible source set -- one page
-# about a single company came out with 188 "sources". Compiling that produces a
-# page claiming an evidence base it does not have.
-MAX_SOURCES="${WIKI_COMPILE_MAX_SOURCES:-120}"
-if [ "$N_SRC" -gt "$MAX_SOURCES" ] && [ "$PROV" = "reconstructed" ]; then
-  echo "wiki-compile: '$THEME' has $N_SRC RECONSTRUCTED sources, over the" >&2
-  echo "wiki-compile: plausibility cap of $MAX_SOURCES. Its provenance is almost" >&2
-  echo "wiki-compile: certainly over-attributed by the link-graph heuristic," >&2
-  echo "wiki-compile: not a genuine theme. Raise WIKI_COMPILE_MAX_SOURCES to" >&2
-  echo "wiki-compile: override." >&2
-  exit 3
-fi
-echo "wiki-compile: $THEME — $N_SRC sources ($PROV provenance)"
 
 # --- Throwaway worktree: the live checkout must never move -------------------
 WT="$(mktemp -d "${TMPDIR:-/tmp}/wiki-compile-XXXXXX")"
@@ -90,6 +79,42 @@ trap cleanup EXIT
 BASE=$(git -C "$WIKI_PATH" rev-parse --verify --quiet "refs/heads/$BRANCH" \
        || git -C "$WIKI_PATH" rev-parse --verify main)
 git -C "$WIKI_PATH" worktree add --quiet --detach "$WT" "$BASE"
+# git materialises no empty directory, and wiki-curate refuses a root with no
+# topic/. A wiki whose listed topics are all still uncompiled has exactly that.
+mkdir -p "$WT/topic" "$WT/summary"
+
+# --- Resolve the theme's source set (deterministic, via wiki-curate) ---------
+# Against the worktree, i.e. the state of BASE: see the header for why. With
+# topics.md present wiki-curate refuses an unlisted theme with exit 3 and says
+# so; that message is the one the caller sees.
+SRC_JSON="$("$CURATE" --wiki "$WT" sources --theme "$THEME" --json)" || exit 3
+N_SRC=$(printf '%s' "$SRC_JSON" | python3 -c 'import json,sys;print(len(json.load(sys.stdin)["sources"]))')
+PAGE_REL=$(printf '%s' "$SRC_JSON" | python3 -c 'import json,sys;print(json.load(sys.stdin)["path"])')
+PROV=$(printf '%s' "$SRC_JSON" | python3 -c 'import json,sys;print(json.load(sys.stdin)["provenance"])')
+# Only the topics.md path reports these; the legacy path implies an existing page.
+PAGE_EXISTS=$(printf '%s' "$SRC_JSON" | python3 -c 'import json,sys;print("1" if json.load(sys.stdin).get("page_exists", True) else "0")')
+SCOPE=$(printf '%s' "$SRC_JSON" | python3 -c 'import json,sys;print(json.load(sys.stdin).get("scope") or "")')
+
+if [ "$N_SRC" -lt 2 ]; then
+  echo "wiki-compile: '$THEME' has $N_SRC source(s); a theme page needs 2+." >&2
+  echo "wiki-compile: single-source material belongs in summary/, not topic/." >&2
+  exit 3
+fi
+echo "wiki-compile: $THEME — $N_SRC sources ($PROV provenance)"
+
+# --- Bootstrap: a listed topic that has no page yet --------------------------
+# Everything downstream assumes the page is on disk: the mtime back-dating that
+# tells a dead model from a genuine no-op, the prompt's "read the current
+# version", and the HEAD: read in the link-preservation gate. Seed an empty file
+# so those behave; `git show HEAD:path` then fails and reads as "no old links",
+# which is exactly right for a first compile.
+FIRST=0
+if [ "$PAGE_EXISTS" = 0 ]; then
+  FIRST=1
+  mkdir -p "$WT/$(dirname "$PAGE_REL")"
+  : > "$WT/$PAGE_REL"
+  echo "wiki-compile: $PAGE_REL does not exist yet — this is a first compile"
+fi
 
 # --- Assemble the context: every digest, in one file the model must read -----
 # Concatenating rather than handing over a list of paths is deliberate: it
@@ -99,15 +124,22 @@ CTX="$WT/.compile-context.md"
 {
   printf '# Compilation context for: %s\n\n' "$THEME"
   printf 'Digests: %s. Every one is evidence for this theme.\n\n---\n\n' "$N_SRC"
-  printf '%s' "$SRC_JSON" | python3 -c '
+  printf '%s' "$SRC_JSON" | WIKI_ROOT="$WT" python3 -c '
 import json,sys,os
-d=json.load(sys.stdin); wiki=os.environ["WIKI_PATH"]
+d=json.load(sys.stdin); wiki=os.environ["WIKI_ROOT"]
+notes=d.get("notes") or {}
 for rel in d["sources"]:
     p=os.path.join(wiki,rel)
     try:
         with open(p,encoding="utf-8",errors="replace") as fh: body=fh.read()
     except OSError: continue
     print(f"\n## SOURCE: {rel}\n")
+    # The wiki analysis page for this digest, by exact title, so the compiler
+    # can link it. Digests do not name their notes; without this line a first
+    # compile links nothing but summary/ slugs.
+    for t in notes.get(rel, []):
+        print(f"Note page: [[{t}]]")
+    if notes.get(rel): print()
     print(body.strip())
     print("\n---")
 '
@@ -133,6 +165,23 @@ mtime_of() { stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null || echo 
 touch -t 200001010000 "$WT/$PAGE_REL" 2>/dev/null || true
 PRE_MTIME=$(mtime_of "$WT/$PAGE_REL")
 TODAY=$(date +%Y-%m-%d)
+# Prompt fragments that exist only in topics mode. SCOPE is the topics.md scope
+# line, verbatim; the digests carry their own `topics:` so the model can see
+# which of them name this topic second.
+CURRENT_NOTE=""
+[ "$FIRST" = 1 ] && CURRENT_NOTE=" It is EMPTY: this is the
+     first compile of this topic, so there are no existing links to preserve."
+SCOPE_BLOCK=""
+if [ -n "$SCOPE" ]; then
+  SCOPE_BLOCK="SCOPE: $SCOPE
+Sources whose topics: list names this topic second may be mentioned lightly
+rather than argued at length.
+A SOURCE block may carry a \"Note page: [[Title]]\" line: that is this wiki's
+own analysis page for the source. Link it by that EXACT title where you draw
+on the source, or list it under \"Also on This Theme\", so this page is also
+the directory of its notes. Those titles are real pages; never shorten them.
+"
+fi
 set +e
 cat <<COMPILE_EOF | (cd "$WT" && "$CLI" -p --allowedTools "Read,Write" --add-dir "$WT")
 You are COMPILING a wiki theme page. Wiki root: $WT
@@ -140,11 +189,11 @@ You are COMPILING a wiki theme page. Wiki root: $WT
 Read these two files first:
   1. .compile-context.md — the $N_SRC source digests this theme is built from.
      Read ALL of it. It is the complete evidence base.
-  2. $PAGE_REL — the current version of this page.
+  2. $PAGE_REL — the current version of this page.$CURRENT_NOTE
 
 Then write exactly one file: $PAGE_REL
 
-WHAT YOU ARE DOING. This page is a DERIVED artifact. You are not appending to
+${SCOPE_BLOCK}WHAT YOU ARE DOING. This page is a DERIVED artifact. You are not appending to
 it — you are rebuilding it from all $N_SRC sources at once. That means you may
 and should REVISE: correct claims the evidence no longer supports, fix stale
 counts and dates, merge duplicated passages, drop what does not earn its place,
@@ -277,6 +326,8 @@ def links(t):
     return {x.split("|")[0].split("#")[0].strip() for x in LINK.findall(t)
             if not x.startswith(("summary/","raw/"))}
 wt,rel=os.environ["WT"],os.environ["PAGE_REL"]
+# A first compile has no HEAD: version; git show fails and stdout is empty,
+# which is the right answer (no old links), not an error.
 old=subprocess.run(["git","-C",wt,"show",f"HEAD:{rel}"],
                    capture_output=True,text=True).stdout
 new=open(os.path.join(wt,rel),encoding="utf-8",errors="replace").read()
@@ -325,9 +376,8 @@ fi
 git -C "$WT" commit --quiet -m "Compile topic/$THEME from $N_SRC sources
 
 Rebuilt as a derived artifact rather than appended to, so stale claims and
-duplicated passages could be revised. Provenance: $PROV.
-
-Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
+duplicated passages could be revised. Provenance: $PROV." \
+  --author="wiki-compile <noreply@wiki-ingest>"
 
 # Advance the branch to the commit we just built detached. update-ref, NOT
 # `branch -f`: branch -f refuses to move a branch that is checked out in any
@@ -341,5 +391,6 @@ if ! git -C "$WIKI_PATH" update-ref "refs/heads/$BRANCH" "$NEWREF" 2>/dev/null; 
   exit 5
 fi
 NEW=$(wc -w < "$WT/$PAGE_REL" | tr -d ' ')
-echo "wiki-compile: COMPILED $PAGE_REL ($NEW words) on branch $BRANCH"
+HOW="COMPILED"; [ "$FIRST" = 1 ] && HOW="COMPILED (first compile, page created)"
+echo "wiki-compile: $HOW $PAGE_REL ($NEW words) on branch $BRANCH"
 echo "wiki-compile: review with  git -C \"\$WIKI_PATH\" diff main..$BRANCH"

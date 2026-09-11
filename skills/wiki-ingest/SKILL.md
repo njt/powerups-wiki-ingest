@@ -1,6 +1,6 @@
 ---
 name: wiki-ingest
-description: Ingest a URL or GitHub repo into an Obsidian wiki — fetches the source, analyzes it with an LLM CLI, and files a cross-linked page (raw/summary/topic tiers) with index + append-only log updates. Use when the user asks to ingest, clip, or file a web page or GitHub repo into their wiki, or to backfill a missing summary. Handles duplicate detection, repo deep-analysis, batch ingestion, and a browser fallback for JS-heavy/unfetchable pages.
+description: Ingest a URL or GitHub repo into an Obsidian wiki — fetches the source, analyzes it with an LLM CLI, and files it as a verbatim archive, a précis tagged with one or two topics from the wiki's fixed topic list, and a cross-linked note, with index + append-only log updates. Use when the user asks to ingest, clip, or file a web page or GitHub repo into their wiki, or to backfill a missing summary. Handles duplicate detection, repo deep-analysis, batch ingestion, and a browser fallback for JS-heavy/unfetchable pages.
 argument-hint: <url> [url ...]
 allowed-tools: Bash, Read
 ---
@@ -37,7 +37,7 @@ if [ -z "$WIKI_INGEST_BIN" ] || [ ! -x "$WIKI_INGEST_BIN/wiki-ingest-run" ]; the
 fi
 export PATH="$WIKI_INGEST_BIN:$PATH"
 
-: "${WIKI_PATH:?Set WIKI_PATH to your Obsidian wiki directory (the one with raw/ summary/ topic/ index.md log.md)}"
+: "${WIKI_PATH:?Set WIKI_PATH to your Obsidian wiki directory (the one with raw/ summary/ note/ topic/ topics.md index.md log.md)}"
 : "${WIKI_INGEST_CLI:=claude}"   # the nested LLM CLI that writes the pages; must support -p --allowedTools --add-dir
 ```
 
@@ -76,10 +76,18 @@ command -v wiki-ingest-run wiki-ingest-dupcheck wiki-ingest-setup trafilatura "$
   `summary/<slug>.md` from an existing `raw/<slug>.md`; fetches/creates nothing
   else.
 - Curation (read-only, deterministic, no LLM/network): `wiki-curate {index,audit,
-  themes,sources,dirty,classify,gaps,fixme}`, `wiki-compile --theme "X"`,
-  `wiki-recompile --since <ref>`, `wiki-review --branch <branch>`. Use these
-  when the user asks to curate, audit, or rebuild the wiki — they are NOT part
-  of a normal ingest.
+  topics,themes,sources,dirty,classify,gaps,fixme}`, `wiki-compile --theme "X"`,
+  `wiki-recompile --since <ref>`, `wiki-review --branch <branch>`, and
+  `wiki-retag --topic <slug>` (LLM; re-files summaries after `topics.md` is
+  edited). `wiki-meta` reads and writes summary frontmatter and `topics.md`.
+  `wiki-migrate-topics` is the one-off 2.x → 3.0 migration. Use these when the
+  user asks to curate, audit, retag, or rebuild the wiki — they are NOT part of
+  a normal ingest.
+
+Topics are a fixed list in `topics.md` at the wiki root (with `misc`). Each
+ingest files the source under one or two of them; nothing an ingest does can
+create a topic page. If the user wants a new topic, that is an edit to
+`topics.md` followed by `wiki-retag` and `wiki-recompile`, not an ingest.
 
 ### `wiki-ingest-run` exit codes
 
@@ -231,7 +239,8 @@ wiki-ingest-run --content "$GRAB_DIR/url-slug.txt" "<FAILED_URL>"
 
 ## Report
 
-Tell the user: the wiki page title, its index placement, key cross-links, and
-the sharp take from the LLM's output. Note any URLs that ended up unfetchable
+Tell the user: the note's title, the topics it was filed under (read `topics:`
+from `summary/<slug>.md`; the ingest output says if the model's choice was
+repaired), key cross-links, and the sharp take from the LLM's output. Note any URLs that ended up unfetchable
 even via surf — add those to `ingest-queue.md` at the wiki root with the
 failure reason.
