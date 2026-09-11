@@ -12,7 +12,8 @@
 # listed topic, in topics.md order; --top caps it; --since selects the topics
 # whose member digests changed. Topics with fewer than two members are skipped
 # by wiki-compile's own floor. Without topics.md the selection is the top
-# themes by provenance, as before (--top defaults to 10, --min-sources to 4).
+# themes by provenance, as before (--top defaults to 10 on every selector,
+# --since included; --min-sources to 4).
 # Selection reads the BRANCH when it already exists (a migration or retag
 # branch has topics.md and tags that main lacks), otherwise the live checkout.
 #
@@ -71,7 +72,11 @@ if git -C "$WIKI_PATH" rev-parse --verify --quiet "refs/heads/$BRANCH" >/dev/nul
 fi
 TOPICS_MODE=0; [ -f "$SEL/topics.md" ] && TOPICS_MODE=1
 
-# cap: first N lines when --top was given, everything otherwise.
+# Legacy mode keeps its default cap of 10 on every selector, as before 3.0: a
+# routine `--since` run on a legacy wiki fans out one LLM call per dirty theme.
+# In topics mode the list is at most the length of topics.md, so no default cap.
+if [ "$TOPICS_MODE" = 0 ] && [ -z "$TOP" ]; then TOP=10; fi
+# cap: first N lines when --top is set, everything otherwise.
 cap() { if [ -n "$TOP" ]; then head -n "$TOP"; else cat; fi; }
 
 if [ -n "$THEMES_FILE" ]; then
@@ -100,7 +105,7 @@ else
 import json,sys
 rows=json.load(sys.stdin)
 for r in rows[:int(sys.argv[1])]: print(r["title"])
-' "${TOP:-10}" > "$LIST"
+' "$TOP" > "$LIST"
 fi
 if [ -n "$SELWT" ]; then
   git -C "$WIKI_PATH" worktree remove --force "$SELWT" 2>/dev/null || rm -rf "$SELWT"
