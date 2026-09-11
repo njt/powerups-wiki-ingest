@@ -1,0 +1,632 @@
+#!/usr/bin/env python3
+"""wiki-retag — re-file digests against topics.md with the LLM, on a branch.
+
+The tool that makes the split rule work: after Nat edits topics.md (a split, a
+rename, a new topic) or when `misc` has grown, this re-asks the model which
+listed topics each digest belongs to and writes the answer into the digest's
+`topics:` key. Nothing else about a digest changes, ever.
+
+    wiki-retag --topic SLUG | --since REF | --slugs FILE | --all
+               [--branch NAME] [--batch N] [--dry-run] [--wiki DIR]
+
+Selection (exactly one):
+    --topic SLUG   digests whose topics: names SLUG (titles and case variants
+                   count, the same way normalize-topics reads them)
+    --since REF    digests changed since REF (git diff --name-only REF..HEAD
+                   -- summary/, HEAD being the branch base)
+    --slugs FILE   one slug per line; # comments and blank lines ignored;
+                   summary/<slug> and <slug>.md spellings are accepted
+    --all          every digest
+
+Options:
+    --branch NAME  branch to commit on (default curate/retag-<YYYYMMDD>); it is
+                   the base when it already exists, else main is
+    --batch N      digests per LLM call (default 20; drop to 10 if the JSON
+                   comes back unreliable through the configured model)
+    --dry-run      run the model and print the proposed map; write nothing,
+                   commit nothing, create no branch
+    --wiki DIR     wiki root (default $WIKI_PATH)
+
+Flow, per batch: build one prompt (the topics table, then each digest's slug,
+title, current topics and the first 200 words of its body), pipe it to
+`$WIKI_INGEST_CLI -p --allowedTools Read` with a DETACHED throwaway worktree as
+cwd, extract the first ```json fence from stdout (else the first balanced
+{...} that parses), and for every answered slug in the batch normalise the
+list with wiki-meta's rules: title -> slug, case folded, deduplicated, at most
+two, unknown dropped with a warning. An answer that normalises to nothing
+leaves that digest UNCHANGED and is reported — this tool never writes `misc`
+on the model's behalf. The key is written in block form via wiki-meta.
+
+Safety. The live checkout is never touched: all work happens in the detached
+worktree, one commit per batch, and the branch ref is moved with update-ref
+(never checked out, never merged). After every batch the worktree is diffed
+against HEAD: only summary/*.md may differ, and each may differ only in its
+`topics:` key — the rest of the frontmatter and the whole body must be byte
+for byte what HEAD has. A violation reverts the worktree, reports what moved,
+and exits 5 without committing that batch; earlier batches stay committed.
+That diff check is the guardrail, not --allowedTools: the configured CLI is a
+wrapper that runs with permissions skipped (design ledger A6).
+
+Exit: 0 done  2 usage/config  3 nothing to do / no topics.md
+      4 the model failed or its output was unusable  5 validation failed
+
+Env: WIKI_PATH, WIKI_INGEST_CLI (default claude).
+Python 3.8+, standard library only; wiki-meta is imported from beside this file.
+"""
+
+import argparse
+import datetime
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+from importlib.machinery import SourceFileLoader
+from importlib.util import module_from_spec, spec_from_file_location
+
+PROG = "wiki-retag"
+PRECIS_WORDS = 200
+SUMMARY_DIR = "summary"
+SUMMARY_RE = re.compile(r"^summary/[^/]+\.md$")
+FENCE_RE = re.compile(r"```json[ \t]*\r?\n(.*?)```", re.S | re.I)
+ANY_FENCE_RE = re.compile(r"```[A-Za-z]*[ \t]*\r?\n(.*?)```", re.S)
+
+
+def load_wiki_meta():
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "wiki-meta")
+    if not os.path.isfile(path):
+        die(f"wiki-meta not found beside me at {path}", 2)
+    spec = spec_from_file_location("wiki_meta", path,
+                                   loader=SourceFileLoader("wiki_meta", path))
+    mod = module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+class Fail(Exception):
+    def __init__(self, msg, code):
+        super().__init__(msg)
+        self.code = code
+
+
+def die(msg, code):
+    raise Fail(msg, code)
+
+
+def say(msg):
+    print(f"{PROG}: {msg}")
+    sys.stdout.flush()
+
+
+def warn(msg):
+    print(f"{PROG}: {msg}", file=sys.stderr)
+    sys.stderr.flush()
+
+
+def git(*args, cwd=None, check=True, text=True):
+    """Run git; return stdout. Failures raise Fail unless check is False."""
+    r = subprocess.run(["git"] + list(args), cwd=cwd, capture_output=True, text=text)
+    if check and r.returncode != 0:
+        die(f"git {' '.join(args)} failed: {(r.stderr or '').strip()}", 2)
+    return r.stdout if check else r
+
+
+# --- digests -------------------------------------------------------------------
+
+def digest_paths(root):
+    d = os.path.join(root, SUMMARY_DIR)
+    if not os.path.isdir(d):
+        return []
+    return sorted(f for f in os.listdir(d)
+                  if f.endswith(".md") and os.path.isfile(os.path.join(d, f)))
+
+
+def slug_of(filename):
+    return filename[:-3]
+
+
+def read_digest(wm, root, slug):
+    """(text, meta, body) of summary/<slug>.md."""
+    text = wm.read_text(os.path.join(root, SUMMARY_DIR, slug + ".md"))
+    meta, body = wm.parse_frontmatter(text)
+    return text, meta, body
+
+
+def topics_in(wm, meta):
+    return wm._as_entries(meta.get(wm.TOPICS_KEY))
+
+
+def title_of(meta, slug):
+    t = meta.get("title")
+    if isinstance(t, list):
+        t = " ".join(str(x) for x in t)
+    t = (t or "").strip() if isinstance(t, str) else ""
+    return t or slug
+
+
+def precis(body, n=PRECIS_WORDS):
+    words = body.split()
+    out = " ".join(words[:n])
+    return out + (" …" if len(words) > n else "")
+
+
+def scan(wm, root):
+    """slug -> current topics list (raw entries) for every digest under root."""
+    out = {}
+    for f in digest_paths(root):
+        s = slug_of(f)
+        try:
+            _, meta, _ = read_digest(wm, root, s)
+        except wm.MetaError as exc:
+            warn(str(exc))
+            continue
+        out[s] = topics_in(wm, meta)
+    return out
+
+
+def member_counts(wm, current, topic_list):
+    """slug -> member count, plus a count of entries no topic resolves."""
+    counts = {t["slug"]: 0 for t in topic_list}
+    unlisted = 0
+    for entries in current.values():
+        seen = set()
+        for e in entries:
+            slug = wm.resolve_topic(e, topic_list)
+            if slug is None:
+                unlisted += 1
+            elif slug not in seen:
+                seen.add(slug)
+                counts[slug] += 1
+    return counts, unlisted
+
+
+# --- selection ---------------------------------------------------------------
+
+def select(wm, args, wt, current, topic_list):
+    if args.all:
+        return sorted(current)
+    if args.topic:
+        want = wm.resolve_topic(args.topic, topic_list)
+        if want is None:
+            die(f"{args.topic!r} is not a listed topic (see topics.md)", 3)
+        return sorted(s for s, entries in current.items()
+                      if any(wm.resolve_topic(e, topic_list) == want for e in entries))
+    if args.since:
+        out = git("diff", "--name-only", "-z", f"{args.since}..HEAD", "--", SUMMARY_DIR + "/",
+                  cwd=wt, text=False)
+        picked = []
+        for rel in out.decode("utf-8", "surrogateescape").split("\0"):
+            if SUMMARY_RE.match(rel):
+                s = slug_of(os.path.basename(rel))
+                if s in current:      # deleted since REF: nothing to retag
+                    picked.append(s)
+        return sorted(set(picked))
+    if args.slugs:
+        picked = []
+        try:
+            with open(args.slugs, encoding="utf-8") as fh:
+                lines = fh.read().splitlines()
+        except OSError as exc:
+            die(f"cannot read {args.slugs}: {exc.strerror}", 2)
+        for ln in lines:
+            s = ln.split("#", 1)[0].strip()
+            if not s:
+                continue
+            if s.startswith(SUMMARY_DIR + "/"):
+                s = s[len(SUMMARY_DIR) + 1:]
+            if s.endswith(".md"):
+                s = s[:-3]
+            if s not in current:
+                warn(f"--slugs: no summary/{s}.md; skipped")
+                continue
+            if s not in picked:
+                picked.append(s)
+        return picked
+    die("one of --topic, --since, --slugs or --all is required", 2)
+
+
+# --- the model -----------------------------------------------------------------
+
+def topics_table(topic_list):
+    rows = ["| slug | title | scope |", "|---|---|---|"]
+    for t in topic_list:
+        rows.append(f"| {t['slug']} | {t['title']} | {t['scope']} |")
+    return "\n".join(rows)
+
+
+def build_prompt(wm, wt, topic_list, batch, current):
+    parts = [
+        f"You are RE-FILING wiki digests against a fixed list of topics. Wiki root: {wt}",
+        "",
+        "THE TOPICS, from topics.md. Answer with the slug, never the title.",
+        "",
+        topics_table(topic_list),
+        "",
+        "For each digest below choose ONE primary topic and at most ONE secondary",
+        "topic from the table, primary first. The scope column says what belongs.",
+        "Use misc only when nothing else fits. The digest's current topics are",
+        "shown: keep them when they are right, change them when they are wrong.",
+        "You may Read summary/<slug>.md for the full digest. Do NOT write, create,",
+        "delete or rename any file, and do NOT run git.",
+        "",
+    ]
+    for slug in batch:
+        _, meta, body = read_digest(wm, wt, slug)
+        cur = ", ".join(current.get(slug, [])) or "(none)"
+        parts += [
+            f"## SUMMARY: {slug}",
+            f"Title: {title_of(meta, slug)}",
+            f"Current topics: {cur}",
+            f"Précis (first {PRECIS_WORDS} words): {precis(body)}",
+            "",
+        ]
+    parts += [
+        "Return exactly one fenced JSON object mapping each digest slug above to a",
+        "list of one or two topic slugs, and nothing else. Every digest listed",
+        "must appear as a key. Shape:",
+        "",
+        "```json",
+        '{"<slug>": ["<primary-topic-slug>", "<secondary-topic-slug>"], "<slug>": ["<topic-slug>"]}',
+        "```",
+    ]
+    return "\n".join(parts) + "\n"
+
+
+def run_model(cli, prompt, cwd):
+    cmd = [cli, "-p", "--allowedTools", "Read"]
+    try:
+        r = subprocess.run(cmd, input=prompt, cwd=cwd, capture_output=True, text=True)
+    except OSError as exc:
+        die(f"cannot run {cli}: {exc.strerror}", 4)
+    if r.returncode != 0:
+        tail = (r.stderr or "").strip().splitlines()[-3:]
+        die(f"{cli} exited {r.returncode}" + (": " + " | ".join(tail) if tail else ""), 4)
+    return r.stdout
+
+
+def _balanced_objects(text):
+    """Yield every balanced {...} span in text, outermost first, string-aware."""
+    i, n = 0, len(text)
+    while i < n:
+        if text[i] != "{":
+            i += 1
+            continue
+        depth, j, in_str, esc = 0, i, False, False
+        while j < n:
+            ch = text[j]
+            if in_str:
+                if esc:
+                    esc = False
+                elif ch == "\\":
+                    esc = True
+                elif ch == '"':
+                    in_str = False
+            elif ch == '"':
+                in_str = True
+            elif ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    yield text[i:j + 1]
+                    break
+            j += 1
+        i += 1
+
+
+def extract_map(text):
+    """The first ```json fence that parses to an object; else the first fence
+    of any kind that does; else the first balanced {...} that does. None if
+    nothing usable is there."""
+    candidates = [m.group(1) for m in FENCE_RE.finditer(text)]
+    candidates += [m.group(1) for m in ANY_FENCE_RE.finditer(text)]
+    candidates += list(_balanced_objects(text))
+    for c in candidates:
+        try:
+            obj = json.loads(c.strip())
+        except ValueError:
+            continue
+        if isinstance(obj, dict):
+            return obj
+    return None
+
+
+def answer_key(k):
+    k = str(k).strip()
+    if k.startswith(SUMMARY_DIR + "/"):
+        k = k[len(SUMMARY_DIR) + 1:]
+    if k.endswith(".md"):
+        k = k[:-3]
+    return k
+
+
+def normalise_answer(wm, value, topic_list):
+    """(new_list, dropped). Empty new_list means: leave the digest alone."""
+    if isinstance(value, str):
+        entries = [value]
+    elif isinstance(value, list):
+        entries = [str(v) for v in value]
+    else:
+        return [], [repr(value)]
+    out, dropped = [], []
+    for e in entries:
+        e = e.strip()
+        if not e:
+            continue
+        slug = wm.resolve_topic(e, topic_list)
+        if slug is None:
+            dropped.append(e)
+        elif slug in out:
+            continue
+        elif len(out) < wm.MAX_TOPICS:
+            out.append(slug)
+        else:
+            dropped.append(e)
+    return out, dropped
+
+
+# --- validation ----------------------------------------------------------------
+
+def porcelain(wt):
+    """[(xy, path)] from git status --porcelain -z (paths unquoted)."""
+    out = git("status", "--porcelain", "-z", "--untracked-files=all", cwd=wt, text=False)
+    fields = out.decode("utf-8", "surrogateescape").split("\0")
+    entries, i = [], 0
+    while i < len(fields):
+        f = fields[i]
+        if not f:
+            i += 1
+            continue
+        xy, path = f[:2], f[3:]
+        if xy[0] in "RC":          # renamed/copied: the old name follows
+            i += 1
+        entries.append((xy, path))
+        i += 1
+    return entries
+
+
+def validate(wm, wt, expected=None):
+    """Return a list of violations (empty when the worktree is acceptable).
+
+    Acceptable: only summary/*.md modified, and each differs from HEAD in
+    nothing but its topics: key — the rest of the frontmatter and the whole
+    body byte-identical. `expected` (slug -> topics list) is what this tool
+    wrote; when given, each modified digest must be exactly HEAD with that key
+    set, and a modified digest we did not write is a violation too.
+    """
+    problems = []
+    for xy, path in porcelain(wt):
+        if not SUMMARY_RE.match(path) or xy.strip() != "M":
+            problems.append(f"{path} ({describe_xy(xy)})")
+            continue
+        slug = slug_of(os.path.basename(path))
+        old = git("show", f"HEAD:{path}", cwd=wt)
+        new = wm.read_text(os.path.join(wt, path))
+        problems += digest_violations(wm, path, old, new)
+        if expected is not None:
+            if slug not in expected:
+                problems.append(f"{path} (modified, but not by this tool)")
+            elif new != wm.set_key(old, wm.TOPICS_KEY, expected[slug]):
+                problems.append(f"{path} (differs from HEAD beyond the topics: key)")
+    return problems
+
+
+def describe_xy(xy):
+    return {"??": "untracked file", "A ": "added", " D": "deleted", "D ": "deleted",
+            "R ": "renamed", "AM": "added"}.get(xy, f"status {xy!r}")
+
+
+def digest_violations(wm, path, old, new):
+    om, ob = wm.parse_frontmatter(old)
+    nm, nb = wm.parse_frontmatter(new)
+    out = []
+    if ob != nb:
+        out.append(f"{path} (body changed)")
+    for k in sorted(set(om) | set(nm)):
+        if k == wm.TOPICS_KEY:
+            continue
+        if om.get(k) != nm.get(k):
+            out.append(f"{path} (frontmatter key {k!r} changed)")
+    return out
+
+
+def revert(wt):
+    git("checkout", "--quiet", "--", ".", cwd=wt, check=False)
+    git("clean", "-fdq", cwd=wt, check=False)
+
+
+# --- main --------------------------------------------------------------------
+
+def parse_args(argv):
+    p = argparse.ArgumentParser(prog=PROG, add_help=False,
+                                description="Re-file digests against topics.md on a branch.")
+    p.add_argument("-h", "--help", action="store_true")
+    p.add_argument("--topic")
+    p.add_argument("--since")
+    p.add_argument("--slugs")
+    p.add_argument("--all", action="store_true")
+    p.add_argument("--branch")
+    p.add_argument("--batch", type=int, default=20)
+    p.add_argument("--dry-run", action="store_true")
+    p.add_argument("--wiki")
+    return p.parse_args(argv)
+
+
+def main(argv=None):
+    args = parse_args(sys.argv[1:] if argv is None else argv)
+    if args.help:
+        sys.stdout.write(__doc__.split("\nFlow, per batch", 1)[0])
+        return 0
+    chosen = sum(1 for x in (args.topic, args.since, args.slugs, args.all) if x)
+    if chosen != 1:
+        die("exactly one of --topic, --since, --slugs or --all is required", 2)
+    if args.batch < 1:
+        die("--batch must be at least 1", 2)
+    wiki = os.path.expanduser(args.wiki or os.environ.get("WIKI_PATH") or "")
+    if not wiki:
+        die("WIKI_PATH is not set and --wiki was not given", 2)
+    if not os.path.isdir(os.path.join(wiki, ".git")) and not os.path.isfile(os.path.join(wiki, ".git")):
+        die(f"not a git checkout: {wiki}", 2)
+    cli = os.environ.get("WIKI_INGEST_CLI") or "claude"
+    branch = args.branch or "curate/retag-" + datetime.date.today().strftime("%Y%m%d")
+    wm = load_wiki_meta()
+
+    # DETACHED on purpose, as in wiki-compile: the branch is never checked out
+    # anywhere, so nothing else holding it (an audit worktree, Nat's own
+    # checkout) can make this fail, and we move the ref afterwards.
+    r = git("rev-parse", "--verify", "--quiet", f"refs/heads/{branch}", cwd=wiki, check=False)
+    base = r.stdout.strip() if r.returncode == 0 else None
+    base_is_branch = base is not None
+    if base is None:
+        base = git("rev-parse", "--verify", "refs/heads/main", cwd=wiki).strip()
+    wt = tempfile.mkdtemp(prefix="wiki-retag-", dir=os.environ.get("TMPDIR") or None)
+    try:
+        git("worktree", "add", "--quiet", "--detach", wt, base, cwd=wiki)
+        return run(wm, args, wiki, wt, cli, branch, base, base_is_branch)
+    finally:
+        r = git("worktree", "remove", "--force", wt, cwd=wiki, check=False)
+        if r.returncode != 0:
+            shutil.rmtree(wt, ignore_errors=True)
+            git("worktree", "prune", cwd=wiki, check=False)
+
+
+def run(wm, args, wiki, wt, cli, branch, base, base_is_branch):
+    try:
+        topic_list = wm.load_topics(wt)
+    except wm.TopicsMissing:
+        die(f"no topics.md at the branch base ({branch if base_is_branch else 'main'}); "
+            "nothing to retag against", 3)
+    except wm.MetaError as exc:
+        die(str(exc), exc.code)
+    current = scan(wm, wt)
+    before, before_unlisted = member_counts(wm, current, topic_list)
+    selected = select(wm, args, wt, current, topic_list)
+    if not selected:
+        say("nothing selected; nothing to do")
+        return 3
+    say(f"{len(selected)} digest(s) selected; base {base[:12]} "
+        f"({'branch ' + branch if base_is_branch else 'main'}); "
+        f"batches of {args.batch}" + ("; DRY RUN" if args.dry_run else ""))
+
+    batches = [selected[i:i + args.batch] for i in range(0, len(selected), args.batch)]
+    changed_total, unusable = 0, 0
+    proposed = dict(current)
+    per_topic_changed = {t["slug"]: 0 for t in topic_list}
+    for bi, batch in enumerate(batches, 1):
+        label = f"batch {bi}/{len(batches)}"
+        prompt = build_prompt(wm, wt, topic_list, batch, current)
+        out = run_model(cli, prompt, wt)
+        # The model must not have touched the worktree, whatever it answered.
+        stray = validate(wm, wt)
+        if stray:
+            revert(wt)
+            fail_validation(label, stray, branch, bi)
+        answers = extract_map(out)
+        if answers is None:
+            warn(f"{label}: no JSON object in the model's output; batch left unchanged")
+            warn("  " + out.strip().replace("\n", "\n  ")[:600])
+            unusable += 1
+            continue
+        answers = {answer_key(k): v for k, v in answers.items()}
+        extra = sorted(k for k in answers if k not in batch)
+        if extra:
+            warn(f"{label}: ignoring {len(extra)} answer(s) for digests not in the batch: "
+                 + ", ".join(extra[:5]))
+        writes, lines = {}, []
+        for slug in batch:
+            if slug not in answers:
+                warn(f"{label}: {slug}: no answer; unchanged")
+                continue
+            new, dropped = normalise_answer(wm, answers[slug], topic_list)
+            for d in dropped:
+                warn(f"{label}: {slug}: dropped {d!r} (not a listed topic, or beyond the second)")
+            if not new:
+                warn(f"{label}: {slug}: answer normalised to nothing; unchanged")
+                continue
+            text, meta, _ = read_digest(wm, wt, slug)
+            new_text = wm.set_key(text, wm.TOPICS_KEY, new)
+            if new_text == text:
+                continue
+            old_list = current.get(slug, [])
+            lines.append(f"{slug}: {old_list or ['(none)']} -> {new}")
+            proposed[slug] = new
+            if args.dry_run:
+                continue
+            wm.write_text_atomic(os.path.join(wt, SUMMARY_DIR, slug + ".md"), new_text)
+            writes[slug] = new
+        if args.dry_run:
+            say(f"{label}: {len(lines)} of {len(batch)} would change")
+            for ln in lines:
+                print("  " + ln)
+            continue
+        problems = validate(wm, wt, expected=writes)
+        if problems:
+            revert(wt)
+            fail_validation(label, problems, branch, bi)
+        if not writes:
+            say(f"{label}: nothing changed")
+            continue
+        paths = [f"{SUMMARY_DIR}/{s}.md" for s in sorted(writes)]
+        git("add", "--", *paths, cwd=wt)
+        msg = (f"Retag {label}: {len(writes)} of {len(batch)} digests changed\n\n"
+               + "\n".join(lines) + "\n")
+        git("commit", "--quiet", "-m", msg, cwd=wt)
+        newref = git("rev-parse", "HEAD", cwd=wt).strip()
+        r = git("update-ref", f"refs/heads/{branch}", newref, cwd=wiki, check=False)
+        if r.returncode != 0:
+            die(f"could not move {branch}; the commit exists at {newref} — recover with:\n"
+                f"  git -C {wiki!r} update-ref refs/heads/{branch} {newref}", 5)
+        for slug, new in writes.items():
+            old_set = {wm.resolve_topic(e, topic_list) for e in current.get(slug, [])}
+            for t in set(new) ^ old_set:
+                if t in per_topic_changed:
+                    per_topic_changed[t] += 1
+            current[slug] = new
+        changed_total += len(writes)
+        say(f"{label}: {len(writes)} of {len(batch)} changed; committed {newref[:12]} on {branch}")
+
+    final = proposed if args.dry_run else scan(wm, wt)
+    after, after_unlisted = member_counts(wm, final, topic_list)
+    if args.dry_run:
+        for slug in selected:
+            old_set = {wm.resolve_topic(e, topic_list) for e in current.get(slug, [])}
+            new_set = {wm.resolve_topic(e, topic_list) for e in proposed.get(slug, [])}
+            if old_set != new_set:
+                for t in old_set ^ new_set:
+                    if t in per_topic_changed:
+                        per_topic_changed[t] += 1
+        changed_total = sum(1 for s in selected if proposed.get(s) != current.get(s))
+    print()
+    print(f"{'topic':<34}{'before':>8}{'after':>8}{'changed':>9}")
+    for t in topic_list:
+        s = t["slug"]
+        print(f"{s:<34}{before[s]:>8}{after[s]:>8}{per_topic_changed[s]:>9}")
+    if before_unlisted or after_unlisted:
+        print(f"{'(unlisted entries)':<34}{before_unlisted:>8}{after_unlisted:>8}")
+    verb = "would change" if args.dry_run else "changed"
+    say(f"{changed_total} of {len(selected)} digest(s) {verb}"
+        + ("" if args.dry_run else f" on {branch}")
+        + (f"; {unusable} batch(es) unusable" if unusable else ""))
+    if not args.dry_run and changed_total:
+        say(f"review with  git -C \"$WIKI_PATH\" diff main..{branch}")
+    return 4 if unusable else 0
+
+
+def fail_validation(label, problems, branch, bi):
+    warn(f"{label}: VALIDATION FAILED — the worktree changed beyond topics: lines:")
+    for p in problems[:20]:
+        warn(f"  {p}")
+    warn("the worktree has been reverted; this batch is NOT committed"
+         + (f"; batches 1-{bi - 1} remain on {branch}" if bi > 1 else "; nothing committed"))
+    raise Fail("validation failed", 5)
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except Fail as exc:
+        if str(exc) != "validation failed":
+            print(f"{PROG}: {exc}", file=sys.stderr)
+        sys.exit(exc.code)
