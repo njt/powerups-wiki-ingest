@@ -228,6 +228,10 @@ export WIKI_INGEST_CLI="$STUB"
 "$BIN/wiki-ingest-setup" >/dev/null || { echo "FAIL: wiki-ingest-setup failed"; exit 1; }
 git -C "$WIKI_PATH" config user.email "test@wiki-ingest.invalid"
 git -C "$WIKI_PATH" config user.name "wiki-ingest test"
+# Setup seeds topics.md (3.0 wikis start in topics mode). The cases up to the
+# "topics mode" marker below model a 2.x wiki, whose whole point is that it has
+# NO topics.md, so take it back out here; the topics cases add their own.
+git -C "$WIKI_PATH" rm -q topics.md && git -C "$WIKI_PATH" commit -q -m "Model a 2.x wiki: no topics.md"
 
 # Seed pre-existing pages in every tier. This is load-bearing: the bug being
 # tested (kata x04s) was a guard that globbed the whole worktree, so it only
