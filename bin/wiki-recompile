@@ -8,7 +8,16 @@
 # Measures itself. It audits the wiki before and after, so the claim "this made
 # the wiki better" is a measurement rather than an opinion.
 #
+# Topics (3.0). When the wiki carries topics.md the default selection is every
+# listed topic, in topics.md order; --top caps it; --since selects the topics
+# whose member digests changed. Topics with fewer than two members are skipped
+# by wiki-compile's own floor. Without topics.md the selection is the top
+# themes by provenance, as before (--top defaults to 10, --min-sources to 4).
+# Selection reads the BRANCH when it already exists (a migration or retag
+# branch has topics.md and tags that main lacks), otherwise the live checkout.
+#
 # Usage:
+#   wiki-recompile                          # topics.md: every listed topic
 #   wiki-recompile --since HEAD~5 --top 8   # only what the last batch touched
 #   wiki-recompile --top 25
 #   wiki-recompile --top 10 --min-sources 5 --branch curate/tonight
@@ -17,7 +26,7 @@
 # Env: WIKI_PATH (required), WIKI_INGEST_CLI (default: claude)
 set -euo pipefail
 
-TOP=10; MIN_SOURCES=4; BRANCH=""; THEMES_FILE=""; SINCE=""
+TOP=""; MIN_SOURCES=4; BRANCH=""; THEMES_FILE=""; SINCE=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --top)          TOP="${2:-}"; shift 2 ;;
@@ -25,7 +34,7 @@ while [ $# -gt 0 ]; do
     --branch)       BRANCH="${2:-}"; shift 2 ;;
     --themes-file)  THEMES_FILE="${2:-}"; shift 2 ;;
     --since)        SINCE="${2:-}"; shift 2 ;;
-    -h|--help)      sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help)      sed -n '2,26p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "wiki-recompile: unknown argument: $1" >&2; exit 2 ;;
   esac
 done
@@ -39,23 +48,63 @@ CURATE="$HERE/wiki-curate"; COMPILE="$HERE/wiki-compile"
 
 # --- Choose the work --------------------------------------------------------
 LIST="$(mktemp "${TMPDIR:-/tmp}/wiki-recompile-XXXXXX")"
-trap 'rm -f "$LIST" "$LIST.before" "$LIST.after"' EXIT
+SELWT=""
+cleanup() {
+  rm -f "$LIST" "$LIST.before" "$LIST.after"
+  [ -n "$SELWT" ] && { git -C "$WIKI_PATH" worktree remove --force "$SELWT" 2>/dev/null || rm -rf "$SELWT"; }
+  return 0
+}
+trap cleanup EXIT
+
+# Where to read the selection from: the branch tip when the branch exists (its
+# topics.md and `topics:` lines are what wiki-compile will build from), else
+# the live checkout. Detached, like every other worktree these tools open.
+SEL="$WIKI_PATH"
+if git -C "$WIKI_PATH" rev-parse --verify --quiet "refs/heads/$BRANCH" >/dev/null; then
+  SELWT="$(mktemp -d "${TMPDIR:-/tmp}/wiki-recompile-select-XXXXXX")"
+  if git -C "$WIKI_PATH" worktree add --quiet --detach "$SELWT" "$BRANCH" 2>/dev/null; then
+    SEL="$SELWT"
+    mkdir -p "$SEL/topic" "$SEL/summary"   # git materialises no empty directory
+  else
+    rm -rf "$SELWT"; SELWT=""
+  fi
+fi
+TOPICS_MODE=0; [ -f "$SEL/topics.md" ] && TOPICS_MODE=1
+
+# cap: first N lines when --top was given, everything otherwise.
+cap() { if [ -n "$TOP" ]; then head -n "$TOP"; else cat; fi; }
+
 if [ -n "$THEMES_FILE" ]; then
   # `|| true`: grep exits 1 on an all-blank file, and set -e would kill the
   # script before the "nothing to compile" message could explain why.
   grep -v '^[[:space:]]*$' "$THEMES_FILE" > "$LIST" || true
 elif [ -n "$SINCE" ]; then
   # Only the themes this batch actually touched, most-affected first, capped by
-  # --top so a routine post-ingest run stays bounded.
-  "$CURATE" dirty --since "$SINCE" --min "$MIN_SOURCES" 2>/dev/null \
-    | head -n "$TOP" > "$LIST" || true
+  # --top so a routine post-ingest run stays bounded. With topics.md, dirty is
+  # set arithmetic over `topics:` and prints topic titles.
+  "$CURATE" --wiki "$SEL" dirty --since "$SINCE" --min "$MIN_SOURCES" 2>/dev/null \
+    | cap > "$LIST" || true
+elif [ "$TOPICS_MODE" = 1 ]; then
+  # Every listed topic, in topics.md order. No --min-sources filter here: the
+  # list IS the selection, and wiki-compile skips anything under two members.
+  "$CURATE" --wiki "$SEL" topics --json \
+    | python3 -c '
+import json,sys
+rows=json.load(sys.stdin)["topics"]
+if sys.argv[1]: rows=rows[:int(sys.argv[1])]
+for r in rows: print(r["title"])
+' "$TOP" > "$LIST"
 else
-  "$CURATE" themes --min "$MIN_SOURCES" --json \
+  "$CURATE" --wiki "$SEL" themes --min "$MIN_SOURCES" --json \
     | python3 -c '
 import json,sys
 rows=json.load(sys.stdin)
 for r in rows[:int(sys.argv[1])]: print(r["title"])
-' "$TOP" > "$LIST"
+' "${TOP:-10}" > "$LIST"
+fi
+if [ -n "$SELWT" ]; then
+  git -C "$WIKI_PATH" worktree remove --force "$SELWT" 2>/dev/null || rm -rf "$SELWT"
+  SELWT=""
 fi
 COUNT=$(wc -l < "$LIST" | tr -d ' ')
 [ "$COUNT" -gt 0 ] || { echo "wiki-recompile: nothing to compile" >&2; exit 3; }
@@ -88,6 +137,7 @@ echo ""
 echo "wiki-recompile: auditing after..."
 WT="$(mktemp -d "${TMPDIR:-/tmp}/wiki-recompile-audit-XXXXXX")"
 if git -C "$WIKI_PATH" worktree add --quiet --detach "$WT" "$BRANCH" 2>/dev/null; then
+  mkdir -p "$WT/topic" "$WT/summary"   # git materialises no empty directory
   "$CURATE" --wiki "$WT" audit --json > "$LIST.after" 2>/dev/null || true
   git -C "$WIKI_PATH" worktree remove --force "$WT" 2>/dev/null || rm -rf "$WT"
 else

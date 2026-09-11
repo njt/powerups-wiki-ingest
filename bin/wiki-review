@@ -2,9 +2,14 @@
 """wiki-review — make a compile branch reviewable at a glance.
 
 `git diff main..curate/compile-*` is dozens of wholly-rewritten pages, which is
-unreadable as a review artifact. This renders what actually changed: per theme,
-how the page grew or shrank, which cross-links it gained and lost, and whether
-any page was orphaned as a result -- plus the corpus-level audit delta.
+unreadable as a review artifact. This renders what actually changed: per page,
+how it grew or shrank, which cross-links it gained and lost, and whether any
+page was orphaned as a result -- plus the corpus-level audit delta and, when
+the branch carries topics.md, the per-topic membership delta.
+
+Pages are the authored tiers, topic/ and note/. A file git records as a RENAME
+(the 3.0 migration moves ~1100 pages topic/ -> note/) is reported as moved,
+not as a deleted page that dropped every link it had.
 
     wiki-review --branch curate/compile-20260809 [--base main] [--out FILE]
 
@@ -15,12 +20,15 @@ import argparse
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
+import tempfile
 
 LINK = re.compile(r"\[\[([^\]\[]+?)\]\]")
 CODE_FENCE = re.compile(r"^```.*?^```", re.M | re.S)
 INLINE_CODE = re.compile(r"`[^`\n]*`")
+PAGE_DIRS = ("topic/", "note/")
 
 
 def git(wiki, *args):
@@ -34,6 +42,11 @@ def git(wiki, *args):
     return r.stdout if r.returncode == 0 else ""
 
 
+def git_ok(wiki, *args):
+    return subprocess.run(["git", "-C", wiki] + list(args),
+                          capture_output=True).returncode == 0
+
+
 def links(text):
     text = INLINE_CODE.sub("", CODE_FENCE.sub("", text))
     out = set()
@@ -44,26 +57,125 @@ def links(text):
     return out
 
 
-def audit(wiki, ref, curate):
-    """Audit a ref by materialising it in a detached worktree."""
-    import tempfile, shutil
-    wt = tempfile.mkdtemp(prefix="wiki-review-")
-    try:
-        if not subprocess.run(["git", "-C", wiki, "worktree", "add", "--quiet",
-                               "--detach", wt, ref],
-                              capture_output=True).returncode == 0:
-            return {}
-        r = subprocess.run([curate, "--wiki", wt, "audit", "--json"],
+def is_page(path):
+    return path.endswith(".md") and path.startswith(PAGE_DIRS)
+
+
+def changes(wiki, base, branch):
+    """(rows, moved): what changed under topic/ and note/ between two refs.
+
+    `--find-renames` is what stops a directory move from reading as mass
+    deletion: a pure rename (R100) is counted in `moved` and not rowed at all;
+    a rename with a content change is rowed under its NEW name, comparing the
+    old blob with the new so its link delta is still honest.
+    """
+    rows, moved = [], 0
+    out = git(wiki, "diff", "--name-status", "--find-renames", f"{base}..{branch}")
+    for line in out.splitlines():
+        parts = line.split("\t")
+        if len(parts) < 2:
+            continue
+        status = parts[0]
+        if status.startswith(("R", "C")):
+            old, new = parts[1], parts[2]
+            if not (is_page(old) or is_page(new)):
+                continue
+            if status.startswith("R"):
+                moved += 1
+            score = int(status[1:] or 0)
+            if score == 100:
+                continue
+            before_path, after_path, flag = old, new, "moved"
+        else:
+            if not is_page(parts[1]):
+                continue
+            before_path = after_path = parts[1]
+            flag = ""
+        before = git(wiki, "show", f"{base}:{before_path}")
+        after = git(wiki, "show", f"{branch}:{after_path}")
+        lb, la = links(before), links(after)
+        rows.append({
+            "theme": os.path.basename(after_path)[:-3],
+            "path": after_path,
+            "wb": len(before.split()), "wa": len(after.split()),
+            "lb": len(lb), "la": len(la),
+            "dropped": sorted(lb - la), "added": sorted(la - lb),
+            "new": before == "", "gone": after == "", "flag": flag,
+        })
+    return rows, moved
+
+
+class Materialised:
+    """A ref checked out in a detached throwaway worktree, for read-only tools."""
+
+    def __init__(self, wiki, ref):
+        self.wiki, self.ref, self.wt = wiki, ref, None
+
+    def __enter__(self):
+        wt = tempfile.mkdtemp(prefix="wiki-review-")
+        if subprocess.run(["git", "-C", self.wiki, "worktree", "add", "--quiet",
+                           "--detach", wt, self.ref],
+                          capture_output=True).returncode == 0:
+            self.wt = wt
+            # git does not materialise an empty directory, and wiki-curate
+            # refuses a root with no topic/. A ref whose topic/ is empty (every
+            # listed topic still uncompiled, or a fixture that moved its only
+            # page) is a legitimate wiki state, not a non-wiki.
+            for d in ("topic", "note", "summary", "raw"):
+                os.makedirs(os.path.join(wt, d), exist_ok=True)
+        else:
+            shutil.rmtree(wt, ignore_errors=True)
+        return self
+
+    def __exit__(self, *exc):
+        if self.wt:
+            subprocess.run(["git", "-C", self.wiki, "worktree", "remove",
+                            "--force", self.wt], capture_output=True)
+            shutil.rmtree(self.wt, ignore_errors=True)
+        return False
+
+    def curate_json(self, curate, *args):
+        if not self.wt:
+            return None
+        r = subprocess.run([curate, "--wiki", self.wt] + list(args),
                            capture_output=True, text=True)
         if r.returncode != 0:
-            return {}
-        return {c["id"]: c["count"] for c in json.loads(r.stdout)}
-    except Exception:
-        return {}
-    finally:
-        subprocess.run(["git", "-C", wiki, "worktree", "remove", "--force", wt],
-                       capture_output=True)
-        shutil.rmtree(wt, ignore_errors=True)
+            return None
+        try:
+            return json.loads(r.stdout)
+        except ValueError:
+            return None
+
+    def audit(self, curate):
+        data = self.curate_json(curate, "audit", "--json")
+        return {c["id"]: c["count"] for c in data} if data else {}
+
+    def topics(self, curate):
+        # {} when the ref has no topics.md (wiki-curate exits 3) -- the base of
+        # the migration branch, for one.
+        data = self.curate_json(curate, "topics", "--json")
+        return {t["slug"]: t for t in data["topics"]} if data else {}
+
+
+def render_topics(tb, ta, o):
+    if not ta:
+        return
+    o.append("## Topics\n")
+    o.append("Members per listed topic (digests whose `topics:` names it), "
+             "base → branch. A topic without a page has not been compiled yet.\n")
+    o.append("| topic | members | page | words |")
+    o.append("|---|---|---|---|")
+    order = list(ta) + [s for s in tb if s not in ta]
+    for slug in order:
+        b, a = tb.get(slug), ta.get(slug)
+        mb = b["members"] if b else 0
+        ma = a["members"] if a else 0
+        pg = ("yes" if a and a["page_exists"] else "no") if a else "(removed)"
+        wb = b["words"] if b else 0
+        wa = a["words"] if a else 0
+        title = (a or b)["title"]
+        o.append(f"| {title} | {mb}→{ma} ({ma-mb:+d}) | {pg} | {wb}→{wa} ({wa-wb:+d}) |")
+    o.append("")
 
 
 def main():
@@ -80,30 +192,23 @@ def main():
     curate = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                           "wiki-curate")
 
-    changed = [l for l in git(a.wiki, "diff", "--name-only",
-                              f"{a.base}..{a.branch}").splitlines() if l.strip()]
-    topics = [f for f in changed if f.startswith("topic/")]
+    rows, moved = changes(a.wiki, a.base, a.branch)
+    branch_has_topics = git_ok(a.wiki, "cat-file", "-e", f"{a.branch}:topics.md")
 
-    rows, notes = [], []
-    for f in sorted(topics):
-        before = git(a.wiki, "show", f"{a.base}:{f}")
-        after = git(a.wiki, "show", f"{a.branch}:{f}")
-        lb, la = links(before), links(after)
-        rows.append({
-            "theme": os.path.basename(f)[:-3],
-            "wb": len(before.split()), "wa": len(after.split()),
-            "lb": len(lb), "la": len(la),
-            "dropped": sorted(lb - la), "added": sorted(la - lb),
-            "new": before == "",
-        })
-
-    ab = audit(a.wiki, a.base, curate)
-    aa = audit(a.wiki, a.branch, curate)
+    with Materialised(a.wiki, a.base) as mb, Materialised(a.wiki, a.branch) as ma:
+        ab, aa = mb.audit(curate), ma.audit(curate)
+        tb, ta = ({}, {})
+        if branch_has_topics:
+            tb, ta = mb.topics(curate), ma.topics(curate)
 
     o = []
     o.append(f"# Compile review — `{a.branch}`\n")
-    o.append(f"{len(rows)} theme pages rebuilt from their sources, "
+    o.append(f"{len(rows)} pages changed under topic/ or note/, "
              f"against `{a.base}`.\n")
+    if moved:
+        o.append(f"Moved: {moved} file{'s' if moved != 1 else ''} "
+                 f"(renamed; links resolve by basename, so nothing is dropped "
+                 f"by the move itself).\n")
 
     if ab and aa:
         o.append("## Corpus health\n")
@@ -117,15 +222,24 @@ def main():
             o.append(f"| {k} | {b} | {c} | {c-b:+d} ({arrow}) |")
         o.append("")
 
+    render_topics(tb, ta, o)
+
     tw_b = sum(r["wb"] for r in rows)
     tw_a = sum(r["wa"] for r in rows)
     o.append("## Pages\n")
-    o.append("| theme | words | links | dropped |")
+    o.append("| page | words | links | dropped |")
     o.append("|---|---|---|---:|")
     for r in sorted(rows, key=lambda x: -x["wa"]):
         dw = r["wa"] - r["wb"]
         dl = r["la"] - r["lb"]
-        o.append(f"| {r['theme']} | {r['wb']}→{r['wa']} ({dw:+d}) "
+        tag = ""
+        if r["new"]:
+            tag = " (new)"
+        elif r["gone"]:
+            tag = " (deleted)"
+        elif r["flag"]:
+            tag = f" ({r['flag']})"
+        o.append(f"| {r['theme']}{tag} | {r['wb']}→{r['wa']} ({dw:+d}) "
                  f"| {r['lb']}→{r['la']} ({dl:+d}) | {len(r['dropped'])} |")
     o.append(f"\n**Totals:** {tw_b:,} → {tw_a:,} words ({tw_a-tw_b:+,}).\n")
 
@@ -145,7 +259,7 @@ def main():
     if a.out:
         with open(a.out, "w", encoding="utf-8") as fh:
             fh.write(out)
-        print(f"wiki-review: wrote {a.out} ({len(rows)} themes)")
+        print(f"wiki-review: wrote {a.out} ({len(rows)} pages)")
     else:
         sys.stdout.write(out)
     return 0
