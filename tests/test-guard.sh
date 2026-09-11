@@ -54,6 +54,8 @@ cat > "$STUB" <<'STUB_EOF'
 set -u
 prompt=$(cat)    # drain the prompt (the *-autoslug modes also read it)
 s="${STUB_SLUG:-unknown}"
+# Optionally keep the prompt, so a case can assert what the LLM was told.
+if [ -n "${STUB_PROMPT_OUT:-}" ]; then printf '%s\n' "$prompt" > "$STUB_PROMPT_OUT"; fi
 
 # "saved verbatim to raw/<slug>.md" appears in every ingest prompt.
 prompt_slug() {
@@ -73,6 +75,22 @@ write_good_slug() {
   printf '# %s\n\nbody\n' "$s" > "topic/$s.md"
   printf -- '- entry\n' >> index.md
   printf -- '- entry\n' >> log.md
+}
+
+# Topics-mode helpers; $s and $url are set by the caller. NOTE_REV varies the
+# body across re-ingests of one source: a byte-identical rewrite stages
+# nothing, and the guard then (rightly) sees no summary and no note.
+write_topics_summary() {  # write_topics_summary <frontmatter line>...
+  { printf -- '---\nurl: %s\n' "$url"; printf '%s\n' "$@"; printf -- '---\n\nprecis of %s, rev %s\n' "$url" "${NOTE_REV:-1}"; } \
+    > "summary/$s.md"
+}
+write_note() {  # write_note <title> — an analysis page whose footer cites $s
+  printf '# %s\n\nbody rev %s\n\n---\n*Sources: [[raw/%s]], [[summary/%s]]*\n' \
+    "$1" "${NOTE_REV:-1}" "$s" "$s" > "note/$1.md"
+}
+note_index_log() {
+  printf -- '- [[%s]] — entry for %s\n' "${NOTE_TITLE:-Note $s}" "$url" >> index.md
+  printf -- '- entry for %s -> raw/%s.md\n' "$url" "$s" >> log.md
 }
 
 case "${STUB_MODE:-nothing}" in
@@ -143,6 +161,61 @@ case "${STUB_MODE:-nothing}" in
   mid-rebase)
     write_good_slug
     git -C "$WIKI_PATH" rebase conflicting >/dev/null 2>&1
+    ;;
+  # --- topics-mode modes (main carries topics.md from the topics cases on) ---
+  # The analysis page is note/<NOTE_TITLE>.md, so a case can collide with an
+  # existing note on purpose; its footer cites the slug the script chose, which
+  # is what the --force guard reads back from HEAD. The topics: lines are the
+  # variable under test and are passed in verbatim.
+  note-good|note-overwrites-other-note)
+    s=$(prompt_slug); url=$(sed -n 's/^url: //p' "raw/$s.md" | head -1)
+    write_topics_summary 'topics:' '  - alpha' '  - beta'
+    write_note "${NOTE_TITLE:-Note $s}"
+    note_index_log
+    ;;
+  note-flow-topics)
+    s=$(prompt_slug); url=$(sed -n 's/^url: //p' "raw/$s.md" | head -1)
+    write_topics_summary 'topics: [alpha, beta]'
+    write_note "${NOTE_TITLE:-Note $s}"
+    note_index_log
+    ;;
+  note-title-case)
+    s=$(prompt_slug); url=$(sed -n 's/^url: //p' "raw/$s.md" | head -1)
+    write_topics_summary 'topics:' '  - Beta Topic'
+    write_note "${NOTE_TITLE:-Note $s}"
+    note_index_log
+    ;;
+  note-bad-topic)
+    s=$(prompt_slug); url=$(sed -n 's/^url: //p' "raw/$s.md" | head -1)
+    write_topics_summary 'topics:' '  - nonesuch'
+    write_note "${NOTE_TITLE:-Note $s}"
+    note_index_log
+    ;;
+  note-writes-topic-dir)
+    s=$(prompt_slug); url=$(sed -n 's/^url: //p' "raw/$s.md" | head -1)
+    write_topics_summary 'topics:' '  - alpha'
+    write_note "${NOTE_TITLE:-Note $s}"
+    printf '# Alpha Topic\n\nan additive edit to a compiled page\n' > "topic/Alpha Topic.md"
+    note_index_log
+    ;;
+  note-edits-topics-md)
+    s=$(prompt_slug); url=$(sed -n 's/^url: //p' "raw/$s.md" | head -1)
+    write_topics_summary 'topics:' '  - gamma'
+    write_note "${NOTE_TITLE:-Note $s}"
+    printf '| gamma | Gamma Topic | A topic the LLM invented. |\n' >> topics.md
+    note_index_log
+    ;;
+  note-two-notes)
+    s=$(prompt_slug); url=$(sed -n 's/^url: //p' "raw/$s.md" | head -1)
+    write_topics_summary 'topics:' '  - alpha'
+    write_note "${NOTE_TITLE:-Note $s}"
+    write_note "Second Note $s"
+    note_index_log
+    ;;
+  summary-topics-flow)
+    # --summary-only in topics mode: summary/ only, topics: in flow form.
+    s=$(prompt_slug); url=$(sed -n 's/^url: //p' "raw/$s.md" | head -1)
+    write_topics_summary 'topics: [alpha]'
     ;;
   *) echo "stub: unknown STUB_MODE ${STUB_MODE:-}" >&2; exit 1 ;;
 esac
@@ -704,6 +777,201 @@ grep -q "held by 2 archives" "$SANDBOX/ecf2" \
   || { echo "FAIL: collision F — main advanced to '$(head_subject)'"; fail=1; }
 [ "$(csum "$WIKI_PATH/raw/split-one.md")" = "$split_raw" ] \
   || { echo "FAIL: collision F — raw/split-one.md was rewritten"; fail=1; }
+
+# =============================================================================
+# Topics-mode cases (fixed topics; spec docs/superpowers/specs/2026-09-11-fixed-topics-design.md)
+#
+# Everything above ran WITHOUT topics.md, and that is the proof legacy mode is
+# intact: the `good` mode (case 4) writes topic/ and no note/, and commits.
+# From here main carries topics.md, which is the gate. The analysis page moves
+# to note/, the summary must carry topics:, and topic/ is off-limits to an
+# ingest. Every case is a real wiki-ingest-run against committed state on main.
+# =============================================================================
+
+cat > "$WIKI_PATH/topics.md" <<'TOPICS_EOF'
+# Topics
+
+Prose around the table is for people; the tools read only the table.
+
+| slug | title | scope |
+|---|---|---|
+| alpha | Alpha Topic | Things about alpha. |
+| beta | Beta Topic | Things about beta. |
+| misc | Miscellany | Anything that fits neither. |
+TOPICS_EOF
+git -C "$WIKI_PATH" add -A && git -C "$WIKI_PATH" commit -q -m "Add topics.md: switch the wiki to topics mode"
+
+SRC_T="$SANDBOX/topics-source.txt"
+printf 'TOPICS BODY. An article about alpha things, long enough to clear the content check.\n' > "$SRC_T"
+
+# The topics: key and its list items exactly as committed on main, so the
+# assertions read the merged result rather than the worktree.
+topics_block() {  # topics_block <slug>
+  git -C "$WIKI_PATH" show "main:summary/$1.md" 2>/dev/null \
+    | awk 'p && /^  - /{print; next} p{exit} /^topics:/{p=1; print}'
+}
+URL_TG="https://example.invalid/topics-good"
+NOTE_TG="Alpha Note — Good"
+
+# --- topics: a correct ingest commits, and the prompt is the new one ---------
+STUB_MODE=note-good NOTE_TITLE="$NOTE_TG" STUB_PROMPT_OUT="$SANDBOX/prompt-tg" \
+  "$BIN/wiki-ingest-run" --content "$SRC_T" "$URL_TG" >/dev/null 2>"$SANDBOX/etg"
+check "topics: note + block topics: commits" 0 $?
+[ "$(head_subject)" = "Ingest: $URL_TG" ] \
+  || { echo "FAIL: topics good — HEAD is '$(head_subject)' (no repair expected), stderr: $(cat "$SANDBOX/etg")"; fail=1; }
+[ -f "$WIKI_PATH/note/$NOTE_TG.md" ] \
+  || { echo "FAIL: topics good — note/$NOTE_TG.md missing from the wiki"; fail=1; }
+[ "$(topics_block topics-good)" = "topics:
+  - alpha
+  - beta" ] \
+  || { echo "FAIL: topics good — committed topics: is [$(topics_block topics-good | tr '\n' '|')]"; fail=1; }
+# What the LLM was told: the table from topics.md, note/ not topic/, the index rule.
+grep -q '^| alpha | Alpha Topic | Things about alpha. |$' "$SANDBOX/prompt-tg" \
+  || { echo "FAIL: topics good — prompt does not embed the topics table"; fail=1; }
+grep -q 'note/<Title>\.md' "$SANDBOX/prompt-tg" \
+  || { echo "FAIL: topics good — prompt does not name note/<Title>.md"; fail=1; }
+grep -q 'topic/<Title>\.md' "$SANDBOX/prompt-tg" \
+  && { echo "FAIL: topics good — prompt still names topic/<Title>.md"; fail=1; }
+grep -q "PRIMARY topic's title" "$SANDBOX/prompt-tg" \
+  || { echo "FAIL: topics good — prompt lacks the index-section rule"; fail=1; }
+
+# --- topics: a flow list is accepted and rewritten in block form -------------
+# The note title carries an accent and an em-dash: the guard reads staged paths
+# back by name, and git C-quotes non-ASCII paths unless told not to.
+NOTE_FLOW="Café — Flow Topics"
+STUB_MODE=note-flow-topics NOTE_TITLE="$NOTE_FLOW" \
+  "$BIN/wiki-ingest-run" --content "$SRC_T" https://example.invalid/topics-flow >/dev/null 2>"$SANDBOX/etf"
+check "topics: flow-form topics: is accepted" 0 $?
+[ "$(head_subject)" = "Ingest: https://example.invalid/topics-flow (topics repaired)" ] \
+  || { echo "FAIL: topics flow — HEAD is '$(head_subject)', stderr: $(cat "$SANDBOX/etf")"; fail=1; }
+[ "$(topics_block topics-flow)" = "topics:
+  - alpha
+  - beta" ] \
+  || { echo "FAIL: topics flow — not rewritten in block form: [$(topics_block topics-flow | tr '\n' '|')]"; fail=1; }
+[ -f "$WIKI_PATH/note/$NOTE_FLOW.md" ] \
+  || { echo "FAIL: topics flow — note/$NOTE_FLOW.md missing from the wiki"; fail=1; }
+
+# --- topics: a title is normalised to its slug --------------------------------
+STUB_MODE=note-title-case \
+  "$BIN/wiki-ingest-run" --content "$SRC_T" https://example.invalid/topics-title >/dev/null 2>"$SANDBOX/ett"
+check "topics: a topic title in topics: is normalised to the slug" 0 $?
+[ "$(head_subject)" = "Ingest: https://example.invalid/topics-title (topics repaired)" ] \
+  || { echo "FAIL: topics title — HEAD is '$(head_subject)', stderr: $(cat "$SANDBOX/ett")"; fail=1; }
+[ "$(topics_block topics-title)" = "topics:
+  - beta" ] \
+  || { echo "FAIL: topics title — committed topics: is [$(topics_block topics-title | tr '\n' '|')]"; fail=1; }
+
+# --- topics: an unknown slug is repaired to misc, on the record --------------
+STUB_MODE=note-bad-topic \
+  "$BIN/wiki-ingest-run" --content "$SRC_T" https://example.invalid/topics-bad >/dev/null 2>"$SANDBOX/etb"
+check "topics: an unknown slug is repaired to misc, not rejected" 0 $?
+[ "$(head_subject)" = "Ingest: https://example.invalid/topics-bad (topics repaired)" ] \
+  || { echo "FAIL: topics bad — HEAD is '$(head_subject)', stderr: $(cat "$SANDBOX/etb")"; fail=1; }
+[ "$(topics_block topics-bad)" = "topics:
+  - misc" ] \
+  || { echo "FAIL: topics bad — committed topics: is [$(topics_block topics-bad | tr '\n' '|')]"; fail=1; }
+grep -q "dropped topic 'nonesuch'" "$SANDBOX/etb" \
+  || { echo "FAIL: topics bad — the drop is not reported on stderr: $(cat "$SANDBOX/etb")"; fail=1; }
+
+# --- topics: any write under topic/ is rejected ------------------------------
+before=$(head_subject)
+STUB_MODE=note-writes-topic-dir \
+  "$BIN/wiki-ingest-run" --content "$SRC_T" https://example.invalid/topics-topicdir >/dev/null 2>"$SANDBOX/etd"
+check "topics: a write under topic/ is rejected" 1 $?
+grep -q "wrote under topic/" "$SANDBOX/etd" \
+  || { echo "FAIL: topics topic-dir — wrong message: $(cat "$SANDBOX/etd")"; fail=1; }
+[ "$(head_subject)" = "$before" ] \
+  || { echo "FAIL: topics topic-dir — main advanced to '$(head_subject)'"; fail=1; }
+[ ! -e "$WIKI_PATH/topic/Alpha Topic.md" ] \
+  || { echo "FAIL: topics topic-dir — topic/Alpha Topic.md reached the wiki"; fail=1; }
+
+# --- topics: editing topics.md is rejected ------------------------------------
+before=$(head_subject)
+topics_sum=$(csum "$WIKI_PATH/topics.md")
+STUB_MODE=note-edits-topics-md \
+  "$BIN/wiki-ingest-run" --content "$SRC_T" https://example.invalid/topics-edit >/dev/null 2>"$SANDBOX/ete"
+check "topics: an edit to topics.md is rejected" 1 $?
+grep -q "topics.md was edited" "$SANDBOX/ete" \
+  || { echo "FAIL: topics edit — wrong message: $(cat "$SANDBOX/ete")"; fail=1; }
+[ "$(head_subject)" = "$before" ] \
+  || { echo "FAIL: topics edit — main advanced to '$(head_subject)'"; fail=1; }
+[ "$(csum "$WIKI_PATH/topics.md")" = "$topics_sum" ] \
+  || { echo "FAIL: topics edit — topics.md changed on main"; fail=1; }
+
+# --- topics: two notes are rejected -------------------------------------------
+before=$(head_subject)
+STUB_MODE=note-two-notes \
+  "$BIN/wiki-ingest-run" --content "$SRC_T" https://example.invalid/topics-two >/dev/null 2>"$SANDBOX/et2"
+check "topics: two note/ pages are rejected" 1 $?
+grep -q "2 note/ paths staged" "$SANDBOX/et2" \
+  || { echo "FAIL: topics two-notes — wrong message: $(cat "$SANDBOX/et2")"; fail=1; }
+[ "$(head_subject)" = "$before" ] \
+  || { echo "FAIL: topics two-notes — main advanced to '$(head_subject)'"; fail=1; }
+
+# --- topics: overwriting another source's note (kata 6ctn) -------------------
+# A new source whose note title is one that already exists on main. Without
+# --force that is a modified note and is rejected outright. With --force it is
+# still rejected, because the note at HEAD cites a different slug — --force
+# means "re-ingest THIS source", not "you may write over anything".
+tg_note_sum=$(csum "$WIKI_PATH/note/$NOTE_TG.md")
+before=$(head_subject)
+STUB_MODE=note-overwrites-other-note NOTE_TITLE="$NOTE_TG" NOTE_REV=2 \
+  "$BIN/wiki-ingest-run" --content "$SRC_T" https://example.invalid/topics-other >/dev/null 2>"$SANDBOX/eto1"
+check "topics: overwriting another source's note is rejected" 1 $?
+grep -q "already exists and was modified" "$SANDBOX/eto1" \
+  || { echo "FAIL: topics overwrite — wrong message: $(cat "$SANDBOX/eto1")"; fail=1; }
+[ "$(head_subject)" = "$before" ] \
+  || { echo "FAIL: topics overwrite — main advanced to '$(head_subject)'"; fail=1; }
+
+STUB_MODE=note-overwrites-other-note NOTE_TITLE="$NOTE_TG" NOTE_REV=2 \
+  "$BIN/wiki-ingest-run" --force --content "$SRC_T" https://example.invalid/topics-other >/dev/null 2>"$SANDBOX/eto2"
+check "topics: --force does not license overwriting another source's note" 1 $?
+grep -q "footer does not cite raw/topics-other" "$SANDBOX/eto2" \
+  || { echo "FAIL: topics overwrite --force — wrong message: $(cat "$SANDBOX/eto2")"; fail=1; }
+[ "$(head_subject)" = "$before" ] \
+  || { echo "FAIL: topics overwrite --force — main advanced to '$(head_subject)'"; fail=1; }
+[ "$(csum "$WIKI_PATH/note/$NOTE_TG.md")" = "$tg_note_sum" ] \
+  || { echo "FAIL: topics overwrite — note/$NOTE_TG.md changed on main"; fail=1; }
+
+# The legitimate case: a --force re-ingest of the SAME source updates its own
+# note in place. The footer at HEAD cites raw/topics-good, so it is allowed.
+before_n=$(raw_count)
+STUB_MODE=note-good NOTE_TITLE="$NOTE_TG" NOTE_REV=2 \
+  "$BIN/wiki-ingest-run" --force --content "$SRC_T" "$URL_TG" >/dev/null 2>"$SANDBOX/eto3"
+check "topics: --force re-ingest of the same source updates its own note" 0 $?
+[ "$(raw_count)" = "$before_n" ] \
+  || { echo "FAIL: topics re-ingest — added an archive, stderr: $(cat "$SANDBOX/eto3")"; fail=1; }
+git -C "$WIKI_PATH" show "main:note/$NOTE_TG.md" | grep -q '^body rev 2$' \
+  || { echo "FAIL: topics re-ingest — note/$NOTE_TG.md on main is not the updated revision, stderr: $(cat "$SANDBOX/eto3")"; fail=1; }
+
+# --- topics: --summary-only writes topics: too --------------------------------
+# A flow list from the stub is normalised to block form; a summary with no
+# topics: at all (the legacy summary-good mode) gets misc. Both are repairs,
+# both say so in the subject, and both still touch only summary/.
+for s in topics-orphan topics-orphan-plain; do
+  printf -- '---\nurl: https://example.invalid/%s\ndate_fetched: 2026-08-01\n---\n\nOrphan body for %s.\n' "$s" "$s" \
+    > "$WIKI_PATH/raw/$s.md"
+done
+git -C "$WIKI_PATH" add -A && git -C "$WIKI_PATH" commit -q -m "Seed orphan raw files for topics-mode backfill"
+
+STUB_MODE=summary-topics-flow \
+  "$BIN/wiki-ingest-run" --summary-only topics-orphan >/dev/null 2>"$SANDBOX/ets1"
+check "topics: --summary-only backfill with flow topics: commits" 0 $?
+[ "$(head_subject)" = "Backfill summary: topics-orphan (topics repaired)" ] \
+  || { echo "FAIL: topics backfill — HEAD is '$(head_subject)', stderr: $(cat "$SANDBOX/ets1")"; fail=1; }
+[ "$(topics_block topics-orphan)" = "topics:
+  - alpha" ] \
+  || { echo "FAIL: topics backfill — committed topics: is [$(topics_block topics-orphan | tr '\n' '|')]"; fail=1; }
+changed=$(git -C "$WIKI_PATH" show --name-only --format="" HEAD | grep -v '^$')
+[ "$changed" = "summary/topics-orphan.md" ] \
+  || { echo "FAIL: topics backfill — commit touched more than the summary: $changed"; fail=1; }
+
+STUB_MODE=summary-good STUB_SLUG=topics-orphan-plain \
+  "$BIN/wiki-ingest-run" --summary-only topics-orphan-plain >/dev/null 2>"$SANDBOX/ets2"
+check "topics: --summary-only backfill without topics: gets misc" 0 $?
+[ "$(topics_block topics-orphan-plain)" = "topics:
+  - misc" ] \
+  || { echo "FAIL: topics backfill plain — committed topics: is [$(topics_block topics-orphan-plain | tr '\n' '|')], stderr: $(cat "$SANDBOX/ets2")"; fail=1; }
 
 [ "$fail" = 0 ] && echo "test-guard: ALL PASS"
 exit $fail
