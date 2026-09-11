@@ -880,6 +880,19 @@ def cmd_sources(v, args):
             die(f"{args.theme!r}: not a listed topic; add it to topics.md and retag", 3)
         srcs = v.topic_members[t["slug"]]
         page = v.pages.get(v.topic_page_key(t))
+        # The note behind each digest. A digest never names its note, so a
+        # first compile that saw only digests could link nothing but
+        # [[summary/...]] slugs (measured on the 2026-09-11 rehearsal: a new
+        # page with 17 sources and zero cross-links). The compiler needs the
+        # titles to make the page a directory of its notes.
+        member = set(srcs)
+        notes = defaultdict(list)
+        for n in v.pages.values():
+            if n["kind"] != "note":
+                continue
+            for s in n["sources"]:
+                if s in member:
+                    notes[v.pages[s]["path"]].append(n["title"])
         out = {
             "theme": t["title"],
             "slug": t["slug"],
@@ -889,6 +902,7 @@ def cmd_sources(v, args):
             "scope": t["scope"],
             "provenance": "declared-topics",
             "sources": [v.pages[s]["path"] for s in srcs],
+            "notes": {k: sorted(set(ts)) for k, ts in sorted(notes.items())},
             "archives": _archives_for(v, srcs),
         }
     else:

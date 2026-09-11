@@ -788,6 +788,11 @@ seed_page "$W2/topic/Test Theme.md" "Test Theme" alpha beta
 seed_page "$W2/note/Legacy Multi.md" "Legacy Multi" alpha gamma
 printf '# Untouched Page\n\nThis page must never change.\n' > "$W2/note/Untouched Page.md"
 printf '# Neighbour Page\n\nThe far end of a cross-link.\n' > "$W2/note/Neighbour Page.md"
+# The note behind digest delta. Its *Sources:* footer is what ties it to the
+# digest; case 11 asserts the compile context names it so the compiler can link
+# it (a digest never names its note, and a first compile saw none — rehearsal
+# 2026-09-11: a new 17-source page with zero cross-links).
+printf '# Delta Note\n\nThe analysis of delta.\n\n---\n*Sources: [[raw/delta]], [[summary/delta]]*\n' > "$W2/note/Delta Note.md"
 git -C "$W2" add -A
 git -C "$W2" commit -q -m "Seed the topics fixture wiki"
 
@@ -883,6 +888,17 @@ grep -q '^## SOURCE: summary/delta.md' "$DRY_CTX" \
   || { echo "FAIL: secondary — summary/delta.md is missing from the context"; fail=1; }
 grep -q '^Digests: 3\.' "$DRY_CTX" \
   || { echo "FAIL: secondary — context header does not count 3 digests: $(head -3 "$DRY_CTX")"; fail=1; }
+# The note behind delta is named right under delta's SOURCE heading, and a
+# digest with no note gets no such line.
+awk '/^## SOURCE: summary\/delta\.md/{f=1;next} f&&/^## SOURCE/{exit} f&&/^Note page: \[\[Delta Note\]\]$/{found=1} END{exit !found}' "$DRY_CTX" \
+  && echo "ok: notes: the context names the note behind digest delta" \
+  || { echo "FAIL: notes — no 'Note page: [[Delta Note]]' under summary/delta.md in the context"; fail=1; }
+# Legacy Multi cites alpha (and gamma, which is not a member), so alpha's block
+# names it; beta is cited by nothing and gets no line. Exactly two lines in all.
+awk '/^## SOURCE: summary\/alpha\.md/{f=1;next} f&&/^## SOURCE/{exit} f&&/^Note page: \[\[Legacy Multi\]\]$/{found=1} END{exit !found}' "$DRY_CTX" \
+  || { echo "FAIL: notes — alpha's block does not name [[Legacy Multi]]"; fail=1; }
+[ "$(grep -c '^Note page:' "$DRY_CTX")" = 2 ] \
+  || { echo "FAIL: notes — expected exactly two Note page lines, got $(grep -c '^Note page:' "$DRY_CTX")"; fail=1; }
 rm -f "$STUB_WROTE" "$STUB_PROMPT"
 run_compile scope --theme "Test Theme" --branch curate/scope
 check "scope: a listed topic with a page compiles" 0 "$RC"
@@ -891,6 +907,8 @@ grep -q '^SCOPE: Scope sentence for the test topic\.$' "$STUB_PROMPT" \
   || { echo "FAIL: scope — no SCOPE line in the prompt"; fail=1; }
 grep -q 'names this topic second may be mentioned lightly' "$STUB_PROMPT" \
   || { echo "FAIL: scope — the secondary-source sentence is missing from the prompt"; fail=1; }
+grep -q 'Note page: \[\[Title\]\]' "$STUB_PROMPT" \
+  || { echo "FAIL: scope — the prompt does not explain the Note page lines"; fail=1; }
 grep -q 'PRESERVE EVERY EXISTING LINK' "$STUB_PROMPT" \
   || { echo "FAIL: scope — the link-preservation rule went missing from the prompt"; fail=1; }
 scopefoot=$(git -C "$W" show "curate/scope:topic/Test Theme.md" 2>/dev/null | grep '^\*Compiled from ')

@@ -127,12 +127,19 @@ CTX="$WT/.compile-context.md"
   printf '%s' "$SRC_JSON" | WIKI_ROOT="$WT" python3 -c '
 import json,sys,os
 d=json.load(sys.stdin); wiki=os.environ["WIKI_ROOT"]
+notes=d.get("notes") or {}
 for rel in d["sources"]:
     p=os.path.join(wiki,rel)
     try:
         with open(p,encoding="utf-8",errors="replace") as fh: body=fh.read()
     except OSError: continue
     print(f"\n## SOURCE: {rel}\n")
+    # The wiki analysis page for this digest, by exact title, so the compiler
+    # can link it. Digests do not name their notes; without this line a first
+    # compile links nothing but summary/ slugs.
+    for t in notes.get(rel, []):
+        print(f"Note page: [[{t}]]")
+    if notes.get(rel): print()
     print(body.strip())
     print("\n---")
 '
@@ -169,6 +176,10 @@ if [ -n "$SCOPE" ]; then
   SCOPE_BLOCK="SCOPE: $SCOPE
 Sources whose topics: list names this topic second may be mentioned lightly
 rather than argued at length.
+A SOURCE block may carry a \"Note page: [[Title]]\" line: that is this wiki's
+own analysis page for the source. Link it by that EXACT title where you draw
+on the source, or list it under \"Also on This Theme\", so this page is also
+the directory of its notes. Those titles are real pages; never shorten them.
 "
 fi
 set +e
