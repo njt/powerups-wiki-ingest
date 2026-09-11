@@ -6,14 +6,36 @@ The ingest pipeline (wiki-ingest-run) files sources. This tool operates on the
 health of the wiki. It is deliberately deterministic — no LLM, no network — so
 it is cheap enough to run every night and trustworthy enough to act on.
 
-    wiki-curate index [--json]     build the graph; print a summary
-    wiki-curate audit [--json]     health report (dead links, orphans, ...)
-    wiki-curate themes [--min N]   topic pages ranked by source count
+    wiki-curate index [--json]          build the graph; print a summary
+    wiki-curate audit [--json]          health report (dead links, orphans, ...)
+    wiki-curate themes [--min N]        topic pages ranked by source count
+    wiki-curate topics [--split-at N]   the fixed topic list: members, page,
+                                        last compiled; then what is in misc
+    wiki-curate sources --theme X       one topic's source set (the compiler's input)
+    wiki-curate dirty --since REF       topics touched by digests changed since REF
+    wiki-curate classify | gaps | fixme
+
+The corpus has four tiers. `raw/` is the verbatim archive; `summary/` the
+digest of one source; `note/` the authored per-source analysis; `topic/` a
+compiled page over many sources. "Authored pages" below means `topic/` plus
+`note/`: the per-page checks (orphans, single-source, provenance, duplicate
+titles, oversized, classify, the stale-count census) run over both, so the
+numbers stay comparable across the migration that moves per-source pages from
+`topic/` into `note/`.
+
+When `<wiki>/topics.md` exists (parsed through the sibling `wiki-meta`), the
+topic list is data and the tools use it: `sources`, `dirty` and `topics` work
+from each digest's `topics:` list rather than from the link graph, and seven
+extra audit checks (`untagged-digests`, `unlisted-topics`,
+`topic-page-missing`, `topic-dir-stray`, `note-topic-name-clash`,
+`topic-oversized`, `index-sections-drift`) enforce the invariant that `topic/`
+holds exactly the listed titles. Without `topics.md` every one of those checks
+reports nothing and the older link-graph behaviour is unchanged.
 
 Config: WIKI_PATH (required), or --wiki. Read-only: this tool never writes to
 the wiki. See docs/design/monograph-what-great-looks-like.md for the design.
 
-Python 3.8+, standard library only.
+Python 3.8+, standard library only (plus the sibling wiki-meta).
 """
 
 import argparse
@@ -23,6 +45,29 @@ import re
 import sys
 import unicodedata
 from collections import defaultdict
+from importlib.machinery import SourceFileLoader
+from importlib.util import module_from_spec, spec_from_file_location
+
+
+def _load_wiki_meta():
+    """Import the sibling `wiki-meta` (no .py extension) as a module.
+
+    It owns the frontmatter and topics.md parsers; this tool must not grow a
+    second copy of either, or the two would drift.
+    """
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "wiki-meta")
+    if not os.path.isfile(path):
+        print(f"wiki-curate: wiki-meta not found beside me at {path}",
+              file=sys.stderr)
+        sys.exit(2)
+    spec = spec_from_file_location("wiki_meta", path,
+                                   loader=SourceFileLoader("wiki_meta", path))
+    mod = module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+wiki_meta = _load_wiki_meta()
 
 
 def nfc(s):
@@ -30,7 +75,7 @@ def nfc(s):
 
     macOS and iCloud store filenames decomposed (NFD), while markdown written by
     an editor or a model is composed (NFC): `topic/Vibe Maths and the Erdős
-    Breakthrough.md` is `Erdős` on disk and `Erdős` in every link to
+    Breakthrough.md` is `Erdős` on disk and `Erdős` in every link to
     it. Obsidian resolves that; comparing raw bytes does not, and the whole
     corpus of accented titles reads as dead links and orphans on the live
     filesystem while looking clean inside a git worktree.
@@ -49,18 +94,25 @@ SELF_COUNT = re.compile(
     r"(?:topic\s+)?pages?",
     re.I,
 )
-FRONTMATTER_KEY = re.compile(r"^([A-Za-z_][A-Za-z0-9_-]*):\s*(.*)$")
+# The footer wiki-compile appends: `*Last compiled: 2026-08-10*`.
+LAST_COMPILED = re.compile(r"^\*Last compiled:\s*(\d{4}-\d{2}-\d{2})\*?\s*$", re.M)
+H2 = re.compile(r"^##\s+(.+?)\s*$", re.M)
 
-WIKI_DIRS = ("topic", "summary", "raw")
-# Bare [[Name]] can match several files. Prefer the authored page over the
-# digest, and the digest over the verbatim archive -- alphabetical order gets
-# this exactly backwards ("raw" < "summary" < "topic").
-KIND_RANK = {"topic": 0, "summary": 1, "raw": 2}
+WIKI_DIRS = ("topic", "note", "summary", "raw")
+# Bare [[Name]] can match several files. Prefer the compiled page over the
+# authored note, the note over the digest, and the digest over the verbatim
+# archive -- alphabetical order gets this backwards ("raw" < "summary" <
+# "topic").
+KIND_RANK = {"topic": 0, "note": 1, "summary": 2, "raw": 3}
+# Members above this are a split candidate; shared by `topics` and the
+# `topic-oversized` audit check so the two never disagree.
+SPLIT_AT = 60
+TOPICS_SECTION = "Topics"
 
 
 def _rank(key):
     top = key.split("/", 1)[0] if "/" in key else ""
-    return (KIND_RANK.get(top, 3), key)
+    return (KIND_RANK.get(top, len(KIND_RANK)), key)
 
 
 def die(msg, code=2):
@@ -90,18 +142,26 @@ def read(path):
 
 
 def parse_frontmatter(text):
-    """Return (dict, body). Tolerant: the corpus predates any schema."""
-    if not text.startswith("---"):
-        return {}, text
-    end = text.find("\n---", 3)
-    if end == -1:
-        return {}, text
-    meta = {}
-    for line in text[3:end].splitlines():
-        m = FRONTMATTER_KEY.match(line.strip())
-        if m:
-            meta[m.group(1)] = m.group(2).strip().strip('"')
-    return meta, text[end + 4:]
+    """Return (dict, body). Tolerant: the corpus predates any schema.
+
+    Delegates to wiki-meta so there is one parser. Scalars come back unquoted;
+    flow `[a, b]` and block lists come back as lists.
+    """
+    return wiki_meta.parse_frontmatter(text)
+
+
+def topics_of(meta):
+    """The `topics:` slugs a digest declares, as a list (possibly empty).
+
+    A list is taken as-is; a scalar is split on commas (the shape a hand edit
+    or an older model run leaves behind); anything else is nothing.
+    """
+    v = meta.get("topics")
+    if v is None:
+        return []
+    if isinstance(v, str):
+        return [s.strip() for s in v.split(",") if s.strip()]
+    return [str(s).strip() for s in v if str(s).strip()]
 
 
 def link_targets(text):
@@ -134,6 +194,7 @@ class Vault:
         self.by_basename = defaultdict(list)   # "Foo" -> [relpaths]
         self._scan()
         self._link()
+        self._load_topic_list()
 
     def _scan(self):
         for dirpath, dirnames, filenames in os.walk(self.wiki):
@@ -160,6 +221,7 @@ class Vault:
                     "title": base,
                     "path": rel,
                     "meta": meta,
+                    "topics": topics_of(meta) if top == "summary" else [],
                     "authored": authored,
                     "words": len(body.split()),
                     "links": link_targets(body) if authored else [],
@@ -211,12 +273,12 @@ class Vault:
             p["sources"] = sorted(srcs)
             p["dangling"] = sorted(dangling)
 
-        # Reconstructed provenance for pages that declare none. A hub's sources
-        # are the union of the digests of the pages it links to -- verified on
-        # topic/Software Engineering Craft.md (55 links, 55 resolve, 51 with
-        # provenance). Deterministic; no model required.
+        # Reconstructed provenance for authored pages that declare none. A
+        # hub's sources are the union of the digests of the pages it links to
+        # -- verified on topic/Software Engineering Craft.md (55 links, 55
+        # resolve, 51 with provenance). Deterministic; no model required.
         for key, p in self.pages.items():
-            if p["kind"] != "topic" or p["sources"]:
+            if p["kind"] not in ("topic", "note") or p["sources"]:
                 p["recon_sources"] = []
                 continue
             # BOUNDED to single-source neighbours. A page built from one source
@@ -233,8 +295,60 @@ class Vault:
                     recon.update(nb["sources"])
             p["recon_sources"] = sorted(recon)
 
+    def _load_topic_list(self):
+        """Read topics.md if present; build slug -> member digests.
+
+        `topic_list` is the ordered list of {slug, title, scope}, or None when
+        the wiki has no topics.md (in which case nothing below is used and the
+        tool behaves exactly as it did before the list existed). A malformed
+        topics.md is a hard error: every tool downstream trusts it.
+        """
+        self.topic_list = None
+        self.topic_members = {}
+        self.topic_by_slug = {}
+        self.topic_by_title = {}
+        try:
+            self.topic_list = wiki_meta.load_topics(self.wiki)
+        except wiki_meta.TopicsMissing:
+            return
+        except wiki_meta.MetaError as exc:
+            die(str(exc), exc.code)
+        members = defaultdict(set)
+        for p in self.pages.values():
+            if p["kind"] == "summary":
+                for slug in p["topics"]:
+                    members[slug].add(p["key"])
+        for t in self.topic_list:
+            self.topic_by_slug[t["slug"]] = t
+            self.topic_by_title[nfc(t["title"]).casefold()] = t
+            self.topic_members[t["slug"]] = sorted(members.get(t["slug"], ()))
+        # Slugs that digests use but the list does not know; kept so the audit
+        # can name them without a second pass.
+        self.unlisted_members = {s: sorted(ks) for s, ks in members.items()
+                                 if s not in self.topic_by_slug}
+
+    def has_topic_list(self):
+        return self.topic_list is not None
+
+    def topic_page_key(self, t):
+        return "topic/" + nfc(t["title"])
+
+    def resolve_topic(self, name):
+        """A topics.md row for `name` (slug or title, case-folded), or None."""
+        slug = wiki_meta.resolve_topic(name, self.topic_list or [])
+        return self.topic_by_slug.get(slug) if slug else None
+
     def topics(self):
+        """Pages under topic/ -- the compiled tier."""
         return [p for p in self.pages.values() if p["kind"] == "topic"]
+
+    def notes(self):
+        """Pages under note/ -- the authored per-source tier."""
+        return [p for p in self.pages.values() if p["kind"] == "note"]
+
+    def authored(self):
+        """topic/ and note/ together: every page a person or model wrote."""
+        return [p for p in self.pages.values() if p["kind"] in ("topic", "note")]
 
     def provenance(self, p):
         return p["sources"] or p["recon_sources"]
@@ -254,23 +368,23 @@ def check_dead_links(v):
 
 def check_orphans(v):
     items = [{"page": p["path"], "words": p["words"]}
-             for p in sorted(v.topics(), key=lambda x: -x["words"])
+             for p in sorted(v.authored(), key=lambda x: -x["words"])
              if not v.inbound.get(p["key"])]
-    return ("orphans", "Topic pages nothing links to", items)
+    return ("orphans", "Authored pages nothing links to", items)
 
 
 def check_no_provenance(v):
     items = []
-    for p in sorted(v.topics(), key=lambda x: -x["words"]):
+    for p in sorted(v.authored(), key=lambda x: -x["words"]):
         if not v.provenance(p):
             items.append({"page": p["path"], "words": p["words"]})
     return ("no-provenance",
-            "Topic pages with no sources, declared or reconstructable", items)
+            "Authored pages with no sources, declared or reconstructable", items)
 
 
 def check_reconstructed(v):
     items = []
-    for p in sorted(v.topics(), key=lambda x: -len(x["recon_sources"])):
+    for p in sorted(v.authored(), key=lambda x: -len(x["recon_sources"])):
         if not p["sources"] and p["recon_sources"]:
             items.append({"page": p["path"], "words": p["words"],
                           "reconstructed": len(p["recon_sources"])})
@@ -280,17 +394,17 @@ def check_reconstructed(v):
 
 def check_single_source(v):
     items = [{"page": p["path"], "source": p["sources"][0]}
-             for p in sorted(v.topics(), key=lambda x: x["key"])
+             for p in sorted(v.authored(), key=lambda x: x["key"])
              if len(p["sources"]) == 1]
     return ("single-source",
-            "Topic pages built from exactly one source (digest with opinions)",
+            "Authored pages built from exactly one source (digest with opinions)",
             items)
 
 
 def check_dangling_sources(v):
     """Archive citations with no digest -- the page cannot be recompiled."""
     items = []
-    for p in sorted(v.topics(), key=lambda x: x["key"]):
+    for p in sorted(v.authored(), key=lambda x: x["key"]):
         for s in p.get("dangling", []):
             items.append({"page": p["path"], "archive": s,
                           "missing": "summary/" + s.split("/", 1)[1]})
@@ -300,12 +414,12 @@ def check_dangling_sources(v):
 
 def check_orphan_digests(v):
     cited = set()
-    for p in v.topics():
+    for p in v.authored():
         cited.update(v.provenance(p))
     items = [{"page": p["path"]}
              for p in sorted(v.pages.values(), key=lambda x: x["key"])
              if p["kind"] == "summary" and p["key"] not in cited]
-    return ("uncited-digests", "Digests no topic page draws on", items)
+    return ("uncited-digests", "Digests no authored page draws on", items)
 
 
 def check_missing_digest(v):
@@ -321,7 +435,9 @@ def check_missing_digest(v):
 
 
 def check_stale_counts(v):
-    actual = len(v.topics())
+    # The census a page claims is "pages of material": topic/ and note/
+    # together, so the same corpus reads the same before and after the move.
+    actual = len(v.authored())
     items = []
     for p in sorted(v.pages.values(), key=lambda x: x["key"]):
         # raw/ is verbatim third-party text; someone else's "my wiki has 500
@@ -360,19 +476,133 @@ def check_wanted(v, floor=2):
 
 def check_duplicate_titles(v):
     dupes = defaultdict(list)
-    for p in v.topics():
+    for p in v.authored():
         dupes[p["title"].lower()].append(p["path"])
     items = [{"title": t, "pages": sorted(ps)}
              for t, ps in sorted(dupes.items()) if len(ps) > 1]
-    return ("duplicate-titles", "Topic pages sharing a title", items)
+    return ("duplicate-titles", "Authored pages sharing a title", items)
 
 
 def check_oversized(v, limit=2500):
     items = [{"page": p["path"], "words": p["words"]}
-             for p in sorted(v.topics(), key=lambda x: -x["words"])
+             for p in sorted(v.authored(), key=lambda x: -x["words"])
              if p["words"] > limit]
     return ("oversized",
-            f"Topic pages over {limit} words (candidates for splitting)", items)
+            f"Authored pages over {limit} words (candidates for splitting)", items)
+
+
+# --- checks that exist only once topics.md does ------------------------------
+# Each returns no items when the wiki has no topic list, so a pre-migration
+# wiki's audit is unchanged apart from seven zero rows.
+
+def check_untagged_digests(v):
+    items = []
+    if v.has_topic_list():
+        items = [{"page": p["path"]}
+                 for p in sorted(v.pages.values(), key=lambda x: x["key"])
+                 if p["kind"] == "summary" and not p["topics"]]
+    return ("untagged-digests", "Digests with no topics: in their frontmatter",
+            items)
+
+
+def check_unlisted_topics(v):
+    items = []
+    if v.has_topic_list():
+        for p in sorted(v.pages.values(), key=lambda x: x["key"]):
+            if p["kind"] != "summary":
+                continue
+            for slug in p["topics"]:
+                if slug not in v.topic_by_slug:
+                    items.append({"page": p["path"], "topic": slug})
+    return ("unlisted-topics", "Digests tagged with a slug topics.md does not list",
+            items)
+
+
+def check_topic_page_missing(v):
+    items = []
+    if v.has_topic_list():
+        for t in v.topic_list:
+            if v.topic_page_key(t) not in v.pages:
+                items.append({"slug": t["slug"], "title": t["title"],
+                              "members": len(v.topic_members[t["slug"]])})
+    return ("topic-page-missing", "Listed topics with no compiled page yet",
+            items)
+
+
+def check_topic_dir_stray(v):
+    items = []
+    if v.has_topic_list():
+        listed = {v.topic_page_key(t) for t in v.topic_list}
+        items = [{"page": p["path"]}
+                 for p in sorted(v.topics(), key=lambda x: x["key"])
+                 if p["key"] not in listed]
+    return ("topic-dir-stray",
+            "Files under topic/ that are not a listed topic (belong in note/)",
+            items)
+
+
+def check_note_topic_name_clash(v):
+    items = []
+    if v.has_topic_list():
+        for p in sorted(v.notes(), key=lambda x: x["key"]):
+            t = v.topic_by_title.get(nfc(p["title"]).casefold())
+            if t:
+                items.append({"page": p["path"], "topic": t["title"]})
+    return ("note-topic-name-clash",
+            "Notes whose title is a listed topic's (Obsidian resolves [[X]] "
+            "case-insensitively)", items)
+
+
+def check_topic_oversized(v, split_at=SPLIT_AT):
+    items = []
+    if v.has_topic_list():
+        for t in v.topic_list:
+            n = len(v.topic_members[t["slug"]])
+            if n > split_at:
+                items.append({"slug": t["slug"], "title": t["title"],
+                              "members": n, "split_at": split_at})
+    return ("topic-oversized",
+            f"Listed topics with more than {split_at} members (split candidates)",
+            items)
+
+
+def index_headings(v):
+    """The H2 headings of index.md that should mirror the topic list.
+
+    If there is a `## Topics` heading, the headings that FOLLOW it are the
+    topic sections; anything before it (an intro, a synthesis section) is not
+    compared. Without a `## Topics` heading every H2 is compared.
+    """
+    text = CODE_FENCE.sub("", read(os.path.join(v.wiki, "index.md")))
+    heads = [nfc(h).strip() for h in H2.findall(text)]
+    if TOPICS_SECTION in heads:
+        heads = heads[heads.index(TOPICS_SECTION) + 1:]
+    return heads
+
+
+def check_index_sections_drift(v):
+    items = []
+    if v.has_topic_list():
+        expected = [nfc(t["title"]) for t in v.topic_list]
+        actual = index_headings(v)
+        if actual != expected:
+            items += [{"issue": "missing", "heading": h}
+                      for h in expected if h not in actual]
+            items += [{"issue": "unexpected", "heading": h}
+                      for h in actual if h not in expected]
+            if not items:
+                # Same headings, wrong order (or one repeated): name the first
+                # place the two lists part company.
+                for i, (a, e) in enumerate(zip(actual, expected)):
+                    if a != e:
+                        items.append({"issue": "out of order", "position": i + 1,
+                                      "heading": a, "expected": e})
+                        break
+                else:
+                    items.append({"issue": "repeated heading",
+                                  "heading": actual[len(expected)]})
+    return ("index-sections-drift",
+            "index.md sections that do not match topics.md, in order", items)
 
 
 CHECKS = [
@@ -380,23 +610,43 @@ CHECKS = [
     check_stale_counts, check_duplicate_titles, check_orphans,
     check_oversized, check_reconstructed, check_single_source,
     check_orphan_digests, check_missing_digest,
+    check_untagged_digests, check_unlisted_topics, check_topic_page_missing,
+    check_topic_dir_stray, check_note_topic_name_clash, check_topic_oversized,
+    check_index_sections_drift,
 ]
 
 
+def run_checks(v, oversized=2500, split_at=SPLIT_AT):
+    out = []
+    for c in CHECKS:
+        if c is check_oversized:
+            out.append(c(v, oversized))
+        elif c is check_topic_oversized:
+            out.append(c(v, split_at))
+        else:
+            out.append(c(v))
+    return out
+
+
 def cmd_index(v, args):
-    topics = v.topics()
-    declared = [p for p in topics if p["sources"]]
-    multi = [p for p in topics if len(p["sources"]) > 1]
-    recon = [p for p in topics if not p["sources"] and p["recon_sources"]]
+    authored = v.authored()
+    declared = [p for p in authored if p["sources"]]
+    multi = [p for p in authored if len(p["sources"]) > 1]
+    recon = [p for p in authored if not p["sources"] and p["recon_sources"]]
     stats = {
         "archive": sum(1 for p in v.pages.values() if p["kind"] == "raw"),
         "digests": sum(1 for p in v.pages.values() if p["kind"] == "summary"),
-        "topics": len(topics),
+        "topics": len(v.topics()),
+        "notes": len(v.notes()),
+        "authored": len(authored),
+        "listed_topics": len(v.topic_list) if v.has_topic_list() else None,
+        # Provenance stats span every authored page (topic/ and note/); the
+        # key names predate note/ and are kept so the JSON contract holds.
         "topics_declaring_sources": len(declared),
         "topics_multi_source": len(multi),
         "topics_single_source": len(declared) - len(multi),
         "topics_provenance_reconstructed": len(recon),
-        "topics_no_provenance": len(topics) - len(declared) - len(recon),
+        "topics_no_provenance": len(authored) - len(declared) - len(recon),
         "wikilinks": sum(len(p["links"]) for p in v.pages.values()),
         "dead_wikilinks": sum(len(p["dead_links"]) for p in v.pages.values()),
     }
@@ -404,9 +654,11 @@ def cmd_index(v, args):
         print(json.dumps(stats, indent=2))
         return 0
     print("Corpus")
-    for k in ("archive", "digests", "topics"):
+    for k in ("archive", "digests", "topics", "notes"):
         print(f"  {k:<34}{stats[k]:>6}")
-    print("\nProvenance")
+    if stats["listed_topics"] is not None:
+        print(f"  {'listed_topics':<34}{stats['listed_topics']:>6}")
+    print("\nProvenance (authored pages: topic/ + note/)")
     for k in ("topics_multi_source", "topics_single_source",
               "topics_provenance_reconstructed", "topics_no_provenance"):
         print(f"  {k:<34}{stats[k]:>6}")
@@ -417,8 +669,8 @@ def cmd_index(v, args):
 
 
 def cmd_audit(v, args):
-    limit = getattr(args, 'oversized', 2500)
-    results = [(c(v, limit) if c is check_oversized else c(v)) for c in CHECKS]
+    results = run_checks(v, getattr(args, "oversized", 2500),
+                         getattr(args, "split_at", SPLIT_AT))
     if args.json:
         print(json.dumps(
             [{"id": i, "title": t, "count": len(x), "items": x}
@@ -459,12 +711,14 @@ def cmd_classify(v, args):
     heuristic should make unattended.
     """
     ent, con = [], []
-    for p in v.topics():
+    for p in v.authored():
         srcs = p["sources"]
         if len(srcs) != 1:
             continue
         d = v.pages.get(srcs[0])
         stitle = (d["meta"].get("title") if d else "") or ""
+        if not isinstance(stitle, str):
+            stitle = " ".join(str(s) for s in stitle)
         a, b = set(_norm_title(p["title"])), set(_norm_title(stitle))
         overlap = len(a & b) / max(1, len(a))
         row = {"page": p["title"], "source_title": stitle,
@@ -488,27 +742,35 @@ def cmd_classify(v, args):
     return 0
 
 
+def changed_digests(v, since):
+    """Keys of the summary/ files that differ between `since` and HEAD."""
+    import subprocess
+    r = subprocess.run(["git", "-C", v.wiki, "diff", "--name-only",
+                        f"{since}..HEAD", "--", "summary/"],
+                       capture_output=True, text=True)
+    if r.returncode != 0:
+        die(f"git diff {since}..HEAD failed: {r.stderr.strip()}", 4)
+    return {nfc(l)[:-3] for l in r.stdout.split("\n")
+            if l.strip().endswith(".md")}
+
+
 def cmd_dirty(v, args):
     """Themes a batch of new sources actually touched.
 
     The join between the two halves of the design. Recompiling "the top N"
-    after an ingest is a guess; a theme is dirty when its own declared source
-    set intersects the digests that changed. Set arithmetic over provenance --
-    no model, no retrieval, no guessing.
+    after an ingest is a guess; a theme is dirty when its own source set
+    intersects the digests that changed. Set arithmetic -- no model, no
+    retrieval, no guessing.
 
-    The blind spot is honest and unavoidable here: a source belonging to a theme
-    nobody has declared yet is invisible to this, because the edge does not
-    exist. That is the new-edge problem, and the backstop is an occasional full
-    recompile rather than a cleverer diff.
+    With topics.md the source set is declared as data: a topic is dirty when a
+    changed digest lists it in `topics:`. Without topics.md the set is the
+    page's provenance from the link graph, and there the blind spot is honest
+    and unavoidable: a source belonging to a theme nobody has declared yet is
+    invisible, because the edge does not exist. That is the new-edge problem,
+    and the backstop is an occasional full recompile rather than a cleverer
+    diff. Tags close it: every digest names its topics the day it lands.
     """
-    import subprocess
-    r = subprocess.run(["git", "-C", v.wiki, "diff", "--name-only",
-                        f"{args.since}..HEAD", "--", "summary/"],
-                       capture_output=True, text=True)
-    if r.returncode != 0:
-        die(f"git diff {args.since}..HEAD failed: {r.stderr.strip()}", 4)
-    changed = {nfc(l)[:-3] for l in r.stdout.split("\n")
-               if l.strip().endswith(".md")}
+    changed = changed_digests(v, args.since)
     if not changed:
         if not args.json:
             print(f"No digests changed since {args.since}.")
@@ -516,11 +778,19 @@ def cmd_dirty(v, args):
             print("[]")
         return 0
     rows = []
-    for p in v.topics():
-        hit = sorted(set(v.provenance(p)) & changed)
-        if len(hit) and len(v.provenance(p)) >= args.min:
-            rows.append({"theme": p["title"], "sources": len(v.provenance(p)),
-                         "changed": len(hit)})
+    if v.has_topic_list():
+        for t in v.topic_list:
+            members = v.topic_members[t["slug"]]
+            hit = sorted(set(members) & changed)
+            if hit and len(members) >= args.min:
+                rows.append({"theme": t["title"], "slug": t["slug"],
+                             "sources": len(members), "changed": len(hit)})
+    else:
+        for p in v.topics():
+            hit = sorted(set(v.provenance(p)) & changed)
+            if len(hit) and len(v.provenance(p)) >= args.min:
+                rows.append({"theme": p["title"], "sources": len(v.provenance(p)),
+                             "changed": len(hit)})
     rows.sort(key=lambda x: (-x["changed"], -x["sources"]))
     if args.json:
         print(json.dumps(rows, indent=2))
@@ -589,24 +859,53 @@ def cmd_fixme(v, args):
     return 0
 
 
+def _archives_for(v, srcs):
+    return [f"raw/{s.split('/', 1)[1]}.md" for s in srcs
+            if f"raw/{s.split('/', 1)[1]}" in v.pages]
+
+
 def cmd_sources(v, args):
-    """The source set for one theme -- the compiler's input contract."""
-    match = [p for p in v.topics()
-             if p["title"].lower() == args.theme.lower()]
-    if not match:
-        die(f"no topic page titled {args.theme!r}", 4)
-    p = match[0]
-    srcs = v.provenance(p)
-    out = {
-        "theme": p["title"],
-        "path": p["path"],
-        "words": p["words"],
-        "provenance": "declared" if p["sources"] else
-                      ("reconstructed" if p["recon_sources"] else "none"),
-        "sources": [v.pages[s]["path"] for s in srcs if s in v.pages],
-        "archives": [f"raw/{s.split('/', 1)[1]}.md" for s in srcs
-                     if f"raw/{s.split('/', 1)[1]}" in v.pages],
-    }
+    """The source set for one theme -- the compiler's input contract.
+
+    With topics.md the theme is a listed slug or title, its sources are the
+    digests tagged with it, and the page path comes from the list -- so a topic
+    with no page yet still resolves and the compiler can bootstrap it. Without
+    topics.md the theme is an existing topic page and its sources are its
+    provenance, as before.
+    """
+    if v.has_topic_list():
+        t = v.resolve_topic(args.theme)
+        if t is None:
+            die(f"{args.theme!r}: not a listed topic; add it to topics.md and retag", 3)
+        srcs = v.topic_members[t["slug"]]
+        page = v.pages.get(v.topic_page_key(t))
+        out = {
+            "theme": t["title"],
+            "slug": t["slug"],
+            "path": v.topic_page_key(t) + ".md",
+            "page_exists": page is not None,
+            "words": page["words"] if page else 0,
+            "scope": t["scope"],
+            "provenance": "declared-topics",
+            "sources": [v.pages[s]["path"] for s in srcs],
+            "archives": _archives_for(v, srcs),
+        }
+    else:
+        match = [p for p in v.topics()
+                 if p["title"].lower() == args.theme.lower()]
+        if not match:
+            die(f"no topic page titled {args.theme!r}", 4)
+        p = match[0]
+        srcs = v.provenance(p)
+        out = {
+            "theme": p["title"],
+            "path": p["path"],
+            "words": p["words"],
+            "provenance": "declared" if p["sources"] else
+                          ("reconstructed" if p["recon_sources"] else "none"),
+            "sources": [v.pages[s]["path"] for s in srcs if s in v.pages],
+            "archives": _archives_for(v, srcs),
+        }
     if args.json:
         print(json.dumps(out, indent=2))
     else:
@@ -635,6 +934,64 @@ def cmd_themes(v, args):
     return 0
 
 
+def topic_rows(v, split_at=SPLIT_AT):
+    """One row per topics.md entry, in file order."""
+    rows = []
+    for t in v.topic_list:
+        members = v.topic_members[t["slug"]]
+        page = v.pages.get(v.topic_page_key(t))
+        m = LAST_COMPILED.search(page["body"]) if page else None
+        rows.append({
+            "slug": t["slug"],
+            "title": t["title"],
+            "members": len(members),
+            "sources": members,
+            "page_exists": page is not None,
+            "words": page["words"] if page else 0,
+            "last_compiled": m.group(1) if m else None,
+            "over": len(members) > split_at,
+        })
+    return rows
+
+
+def cmd_topics(v, args):
+    """The fixed topic list as the corpus sees it, then what is in misc.
+
+    This is the report the split rule runs on: a topic over --split-at is a
+    candidate for splitting in topics.md; the misc list is where a topic that
+    wants to exist would show up first. It reports only -- Nat edits the list.
+    """
+    if not v.has_topic_list():
+        die(f"no {wiki_meta.TOPICS_FILE} under {v.wiki}; nothing to report", 3)
+    rows = topic_rows(v, args.split_at)
+    misc_slug = wiki_meta.FALLBACK_SLUG
+    misc = []
+    for key in v.topic_members.get(misc_slug, []):
+        p = v.pages[key]
+        title = p["meta"].get("title") or ""
+        if not isinstance(title, str):
+            title = " ".join(str(s) for s in title)
+        misc.append({"page": key, "title": title})
+    if args.json:
+        print(json.dumps({"split_at": args.split_at, "topics": rows,
+                          "misc": misc}, indent=2, ensure_ascii=False))
+        return 0
+    print(f"{'members':>7} {'page':<5} {'words':>6} {'compiled':<11} "
+          f"{'slug':<32} title")
+    for r in rows:
+        print(f"{r['members']:>7} {'yes' if r['page_exists'] else '-':<5} "
+              f"{r['words']:>6} {r['last_compiled'] or '-':<11} "
+              f"{r['slug']:<32} {r['title']}{'  OVER' if r['over'] else ''}")
+    over = sum(1 for r in rows if r["over"])
+    missing = sum(1 for r in rows if not r["page_exists"])
+    print(f"\n{len(rows)} topics; {over} over {args.split_at} members; "
+          f"{missing} without a page.")
+    print(f"\n{misc_slug}: {len(misc)} digest(s)")
+    for m in misc:
+        print(f"  {m['page']}  {m['title']}")
+    return 0
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="wiki-curate", description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -653,6 +1010,9 @@ def main(argv=None):
                    help="word count above which a page is a split candidate "
                         "(default 2500; compiled themes run larger because "
                         "they carry their own directory section)")
+    p.add_argument("--split-at", type=int, default=SPLIT_AT, dest="split_at",
+                   help=f"members above which a listed topic is a split "
+                        f"candidate (default {SPLIT_AT}; topics.md only)")
     p.set_defaults(fn=cmd_audit)
 
     p = sub.add_parser("classify", help="entity pages vs editorial concepts")
@@ -661,7 +1021,8 @@ def main(argv=None):
     p.add_argument("--json", action="store_true")
     p.set_defaults(fn=cmd_classify)
 
-    p = sub.add_parser("dirty", help="themes whose sources changed since a ref")
+    p = sub.add_parser("dirty", help="themes whose sources changed since a ref "
+                                     "(by topics: tag when topics.md exists)")
     p.add_argument("--since", required=True, metavar="REF")
     p.add_argument("--min", type=int, default=2,
                    help="minimum total sources for a theme (default 2)")
@@ -676,7 +1037,9 @@ def main(argv=None):
     p.add_argument("--json", action="store_true")
     p.set_defaults(fn=cmd_fixme)
 
-    p = sub.add_parser("sources", help="the source set for one theme")
+    p = sub.add_parser("sources", help="the source set for one theme (a listed "
+                                       "slug or title when topics.md exists; "
+                                       "exit 3 if not listed)")
     p.add_argument("--theme", required=True)
     p.add_argument("--json", action="store_true")
     p.set_defaults(fn=cmd_sources)
@@ -686,6 +1049,15 @@ def main(argv=None):
     p.add_argument("--min", type=int, default=2,
                    help="minimum sources (default 2)")
     p.set_defaults(fn=cmd_themes)
+
+    p = sub.add_parser("topics", help="the topics.md list with members, page, "
+                                      "last compiled; then the misc digests "
+                                      "(exit 3 without topics.md)")
+    p.add_argument("--split-at", type=int, default=SPLIT_AT, dest="split_at",
+                   help=f"members above which a topic is marked OVER "
+                        f"(default {SPLIT_AT})")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(fn=cmd_topics)
 
     args = ap.parse_args(argv)
     return args.fn(Vault(resolve_wiki(args.wiki)), args)

@@ -22,7 +22,7 @@ export WIKI_PATH="$SANDBOX/wiki"
 trap 'rm -rf "$SANDBOX"' EXIT
 
 W="$WIKI_PATH"
-mkdir -p "$W/topic/nested" "$W/summary" "$W/raw"
+mkdir -p "$W/topic/nested" "$W/note" "$W/summary" "$W/raw"
 
 # --- fixture -----------------------------------------------------------------
 # Every file below exists to make exactly one assertion possible. Comments name
@@ -94,9 +94,22 @@ printf '# Wanted B\n\nAlso wants [[Much Wanted Page]].\n' > "$W/topic/Wanted B.m
 printf '# Lonely Linker\n\nOnly this page wants [[Barely Wanted Page]].\n' \
   > "$W/topic/Lonely Linker.md"
 
-# case 6 (single-source): one digest cited vs two.
-printf '# Multi Source Page\n\nBuilt from [[summary/multi-a]] and [[summary/multi-b]].\n' \
+# case 6 (single-source): one digest cited vs two. The multi-source page also
+# links the note below (case 11), which changes nothing about its own
+# provenance: declared sources are not extended by outbound links.
+printf '# Multi Source Page\n\nBuilt from [[summary/multi-a]] and [[summary/multi-b]].\nSee also [[Noted Analysis]].\n' \
   > "$W/topic/Multi Source Page.md"
+
+# case 11 (note/ is an authored tier): a per-source analysis under note/ is
+# audited exactly like one under topic/ -- it cites a digest (single-source),
+# it can be linked to (not an orphan), and an unlinked one IS an orphan with no
+# provenance. Drop "note" from WIKI_DIRS and every assertion on these turns red.
+printf '# Noted Analysis\n\nSource: [[summary/note-src]]\n' > "$W/note/Noted Analysis.md"
+printf '# Orphan Note\n\nNothing links here and it cites nothing.\n' > "$W/note/Orphan Note.md"
+printf -- '---\nurl: https://example.invalid/note-src\n---\n\nPrecis of note-src.\n' \
+  > "$W/summary/note-src.md"
+printf -- '---\nurl: https://example.invalid/note-src\ndate_fetched: 2026-08-01\n---\n\nArchived body.\n' \
+  > "$W/raw/note-src.md"
 
 # case 7 (orphans / duplicate titles).
 printf '# Orphan Page\n\nNothing links here and it links nowhere.\n' > "$W/topic/Orphan Page.md"
@@ -260,24 +273,27 @@ grep -q "findings across" "$SANDBOX/audit.txt" \
   || { echo "FAIL: human audit has no summary line: $(cat "$SANDBOX/audit.txt")"; fail=1; }
 
 # --- case 0: the corpus census matches the fixture ----------------------------
-expect_stat "index: 7 archived sources" 7 "$INDEX" archive
-expect_stat "index: 7 digests" 7 "$INDEX" digests
+expect_stat "index: 8 archived sources" 8 "$INDEX" archive
+expect_stat "index: 8 digests" 8 "$INDEX" digests
 expect_stat "index: 19 topic pages" 19 "$INDEX" topics
-expect_stat "index: 15 wikilinks found in authored pages" 15 "$INDEX" wikilinks
+expect_stat "index: 2 note pages" 2 "$INDEX" notes
+expect_stat "index: 21 authored pages (topic + note)" 21 "$INDEX" authored
+expect_stat "index: no topics.md, so no listed_topics count" None "$INDEX" listed_topics
+expect_stat "index: 17 wikilinks found in authored pages" 17 "$INDEX" wikilinks
 expect_stat "index: 5 of them dead" 5 "$INDEX" dead_wikilinks
-expect_stat "index: 4 topics declare sources" 4 "$INDEX" topics_declaring_sources
-expect_stat "index: 1 topic is multi-source" 1 "$INDEX" topics_multi_source
-expect_stat "index: 1 topic has reconstructed provenance" 1 "$INDEX" topics_provenance_reconstructed
+expect_stat "index: 5 authored pages declare sources (one is the note)" 5 "$INDEX" topics_declaring_sources
+expect_stat "index: 1 page is multi-source" 1 "$INDEX" topics_multi_source
+expect_stat "index: 1 page has reconstructed provenance" 1 "$INDEX" topics_provenance_reconstructed
 
 # case 8's negative half needs the fixture to stay small enough that a claim of
 # 20 is inside the max(25, 5%) tolerance. Assert that premise rather than assume
-# it: grow the fixture past ~45 topics and this fires instead of the negative
-# case quietly becoming vacuous.
-topics=$(stat_of "$INDEX" topics)
-if [ "$topics" -lt 45 ]; then
-  echo "ok: fixture is small enough for the stale-count tolerance premise ($topics topics)"
+# it: grow the fixture past ~45 authored pages and this fires instead of the
+# negative case quietly becoming vacuous.
+authored=$(stat_of "$INDEX" authored)
+if [ "$authored" -lt 45 ]; then
+  echo "ok: fixture is small enough for the stale-count tolerance premise ($authored authored pages)"
 else
-  echo "FAIL: fixture has $topics topics — a claim of 20 is no longer inside tolerance"
+  echo "FAIL: fixture has $authored authored pages — a claim of 20 is no longer inside tolerance"
   fail=1
 fi
 
@@ -335,7 +351,7 @@ expect_count "single-source: a page citing one digest is reported" 1 "$AUDIT" \
   single-source "page=topic/Child One.md" "source=summary/child-one-src"
 expect_count "single-source: a page citing two digests is not" 0 "$AUDIT" \
   single-source "page=topic/Multi Source Page.md"
-expect_count "single-source: three such pages in the fixture" 3 "$AUDIT" single-source
+expect_count "single-source: four such pages in the fixture" 4 "$AUDIT" single-source
 
 # --- case 7: duplicate titles and orphans ------------------------------------
 expect_count "duplicates: two pages sharing a title are reported once" 1 "$AUDIT" \
@@ -354,8 +370,10 @@ expect_count "orphans: a linked topic page is not" 0 "$AUDIT" \
 # --- case 8: stale self-counts, both directions ------------------------------
 expect_count "stale-counts: a wildly drifted claim is flagged" 1 "$AUDIT" \
   stale-self-counts "page=topic/Stale Count Claim.md" "claims=9999"
-expect_count "stale-counts: the finding carries the real count" 1 "$AUDIT" \
-  stale-self-counts "page=topic/Stale Count Claim.md" "actual=$topics"
+# "actual" is the authored census (topic + note): the same corpus must read the
+# same before and after per-source pages move from topic/ to note/.
+expect_count "stale-counts: the finding carries the authored count" 1 "$AUDIT" \
+  stale-self-counts "page=topic/Stale Count Claim.md" "actual=$authored"
 expect_count "stale-counts: a claim within tolerance is NOT flagged" 0 "$AUDIT" \
   stale-self-counts "page=topic/Honest Count Claim.md"
 expect_count "stale-counts: exactly one page flagged" 1 "$AUDIT" stale-self-counts
@@ -390,6 +408,40 @@ expect_count "themes: the hub ranks on reconstructed sources" 1 "$THEMES" @ \
 expect_count "themes: a 1-source page is below --min 2" 0 "$THEMES" @ "title=Child One"
 expect_count "themes: exactly two pages clear --min 2" 2 "$THEMES" @
 
+# --- case 11: note/ is audited as an authored tier ----------------------------
+expect_count "note: a note citing one digest is single-source" 1 "$AUDIT" \
+  single-source "page=note/Noted Analysis.md" "source=summary/note-src"
+expect_count "note: a linked note is not an orphan" 0 "$AUDIT" \
+  orphans "page=note/Noted Analysis.md"
+expect_count "note: an unlinked note is an orphan" 1 "$AUDIT" \
+  orphans "page=note/Orphan Note.md"
+expect_count "note: an unlinked note citing nothing has no provenance" 1 "$AUDIT" \
+  no-provenance "page=note/Orphan Note.md"
+expect_count "note: the note's digest is cited (not an uncited digest)" 0 "$AUDIT" \
+  uncited-digests "page=summary/note-src.md"
+expect_count "note: the multi-source page's provenance is unchanged by linking a note" 0 "$AUDIT" \
+  single-source "page=topic/Multi Source Page.md"
+
+# --- no topics.md: the topic-list layer is dormant ----------------------------
+# Every topics.md-gated check must exist (count.py exits 3 on an unknown id, so
+# "0" also proves presence) and report nothing on a wiki without the file.
+for chk in untagged-digests unlisted-topics topic-page-missing topic-dir-stray \
+           note-topic-name-clash topic-oversized index-sections-drift; do
+  expect_count "no-topics: $chk is present and empty" 0 "$AUDIT" "$chk"
+done
+"$BIN/wiki-curate" topics >/dev/null 2>"$SANDBOX/e-topics"
+expect_rc "no-topics: the topics subcommand exits 3" 3 $?
+grep -q "no topics.md" "$SANDBOX/e-topics" \
+  || { echo "FAIL: no-topics — topics message unhelpful: $(cat "$SANDBOX/e-topics")"; fail=1; }
+# sources keeps its pre-topics contract: the theme is an existing page, the
+# provenance is what the page declares, and an unknown theme is exit 4.
+"$BIN/wiki-curate" sources --theme "Multi Source Page" --json > "$SANDBOX/src.json" 2>/dev/null
+expect_rc "no-topics: sources resolves an existing page" 0 $?
+expect_stat "no-topics: sources provenance is 'declared'" declared "$SANDBOX/src.json" provenance
+expect_stat "no-topics: sources path is the page" "topic/Multi Source Page.md" "$SANDBOX/src.json" path
+"$BIN/wiki-curate" sources --theme "No Such Theme" >/dev/null 2>&1
+expect_rc "no-topics: an unknown theme is still exit 4" 4 $?
+
 # --- configuration errors -----------------------------------------------------
 env -u WIKI_PATH "$BIN/wiki-curate" audit >/dev/null 2>"$SANDBOX/e-nopath"
 expect_rc "no WIKI_PATH is a clean error" 2 $?
@@ -421,6 +473,314 @@ else
   echo "FAIL: read-only — running wiki-curate changed the wiki"
   fail=1
 fi
+
+# =============================================================================
+# Phase 2 — a wiki WITH topics.md. A separate, git-backed fixture: `dirty`
+# needs commits, and everything topics.md switches on must be shown to switch
+# on here while the fixture above proved it stays off without the file.
+# =============================================================================
+T="$SANDBOX/twiki"
+mkdir -p "$T/topic" "$T/note" "$T/summary" "$T/raw"
+
+# Three topics; misc is required by wiki-meta. A smaller table than
+# assets/topics.md, same format.
+cat > "$T/topics.md" <<'EOF'
+# Topics
+
+Prose around the table is for people; the tools read only the table.
+
+| slug | title | scope |
+|---|---|---|
+| alpha-topic | Alpha Topic | The first topic. |
+| beta-topic | Beta Topic | The second topic. |
+| misc | Miscellany | Anything that fits none of the above. |
+EOF
+
+# Digests, one per shape of `topics:` the parser must read. Membership:
+#   alpha-topic: s-block, s-flow, s-alpha3   (3 -> OVER at --split-at 2)
+#   beta-topic:  s-block, s-scalar           (2)
+#   misc:        s-misc                      (1)
+tdigest() {  # tdigest <slug> <title> <topics-lines...>
+  local slug="$1" title="$2"; shift 2
+  { printf -- '---\nurl: https://example.invalid/%s\ntitle: "%s"\n' "$slug" "$title"
+    for ln in "$@"; do printf '%s\n' "$ln"; done
+    printf -- '---\n\nPrecis of %s.\n' "$slug"; } > "$T/summary/$slug.md"
+  printf -- '---\nurl: https://example.invalid/%s\n---\n\nArchived %s.\n' "$slug" "$slug" \
+    > "$T/raw/$slug.md"
+}
+tdigest s-block   "Block List Source"  'topics:' '  - alpha-topic' '  - beta-topic'
+tdigest s-flow    "Flow List Source"   'topics: [alpha-topic]'
+tdigest s-alpha3  "Third Alpha Source" 'topics:' '  - alpha-topic'
+tdigest s-scalar  "Scalar Source"      'topics: beta-topic'
+tdigest s-misc    "A Misc Source"      'topics:' '  - misc'
+tdigest s-untagged "Untagged Source"   'author: Nobody'          # untagged-digests +
+tdigest s-bogus   "Bogus Topic Source" 'topics: [bogus-topic]'   # unlisted-topics +
+
+# topic/: Alpha Topic exists (compiled, with a provenance footer that names only
+# TWO of its three tag members, so the topics path and the legacy path give
+# different answers); Beta Topic and Miscellany have no page yet
+# (topic-page-missing +); Stray Page is not on the list (topic-dir-stray +).
+{ printf '# Alpha Topic\n\nA compiled page about alpha. '
+  printf 'Filler word. %.0s' 1 2 3 4 5 6 7 8 9 10
+  printf '\n\n---\n\n*Compiled from 2 sources: [[summary/s-block]], [[summary/s-flow]]*\n*Last compiled: 2026-08-10*\n'
+} > "$T/topic/Alpha Topic.md"
+printf '# Stray Page\n\nNot a listed topic; should live in note/.\n' > "$T/topic/Stray Page.md"
+
+# note/: one whose title collides with a listed topic case-insensitively
+# (note-topic-name-clash +) and one that does not (-).
+printf '# beta topic\n\nA note that shadows the Beta Topic page name.\n' > "$T/note/beta topic.md"
+printf '# Fine Note\n\nSource: [[summary/s-misc]]\n' > "$T/note/Fine Note.md"
+
+# index.md, drifted: an H2 before `## Topics` (must be ignored), one right
+# section, one wrong, two missing.
+printf '# Wiki Index\n\n## Preamble\n\nIgnored.\n\n## Topics\n\n- [[Alpha Topic]]\n\n## Alpha Topic\n\n- x\n\n## Wrong Heading\n\n- y\n' \
+  > "$T/index.md"
+
+git init -q "$T"
+git -C "$T" config user.email "test@wiki-ingest.invalid"
+git -C "$T" config user.name "wiki-ingest test"
+git -C "$T" add -A && git -C "$T" commit -q -m "state A"
+STATE_A=$(git -C "$T" rev-parse HEAD)
+
+twiki_fingerprint() {
+  (cd "$T" && find . -path ./.git -prune -o -type f -exec shasum {} + | sort) \
+    | shasum | awk '{print $1}'
+}
+# curate_ro <outfile> <args...>: run the real binary against the topics wiki,
+# capturing stdout to <outfile>, stderr to <outfile>.err and the exit code in
+# RC — and prove that invocation wrote nothing.
+curate_ro() {
+  local out="$1"; shift
+  local before; before=$(twiki_fingerprint)
+  "$BIN/wiki-curate" --wiki "$T" "$@" > "$out" 2> "$out.err"
+  RC=$?
+  [ "$before" = "$(twiki_fingerprint)" ] \
+    || { echo "FAIL: read-only — 'wiki-curate $*' changed the topics wiki"; fail=1; }
+}
+jget() {  # jget <json-file> <python-expr over d>
+  python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(eval(sys.argv[2]))' "$1" "$2" 2>&1
+}
+expect_j() {  # expect_j <label> <expected> <json-file> <expr>
+  local got; got=$(jget "$3" "$4")
+  if [ "$got" = "$2" ]; then echo "ok: $1"; else echo "FAIL: $1 — expected '$2', got: $got"; fail=1; fi
+}
+
+# --- index sees the list -----------------------------------------------------
+TINDEX="$SANDBOX/t-index.json"
+curate_ro "$TINDEX" index --json
+expect_rc "topics-wiki: index --json succeeds" 0 $RC
+expect_stat "topics-wiki: index counts the listed topics" 3 "$TINDEX" listed_topics
+expect_stat "topics-wiki: index counts topic/ pages (listed or not)" 2 "$TINDEX" topics
+expect_stat "topics-wiki: index counts note/ pages" 2 "$TINDEX" notes
+
+# --- audit: the seven gated checks, positive and negative --------------------
+TAUDIT="$SANDBOX/t-audit.json"
+curate_ro "$TAUDIT" audit --json
+expect_rc "topics-wiki: audit --json succeeds" 0 $RC
+curate_ro "$SANDBOX/t-audit.txt" audit
+expect_rc "topics-wiki: audit (human format) succeeds" 0 $RC
+
+expect_count "untagged: a digest with no topics: is reported" 1 "$TAUDIT" \
+  untagged-digests "page=summary/s-untagged.md"
+expect_count "untagged: a tagged digest is not" 0 "$TAUDIT" \
+  untagged-digests "page=summary/s-block.md"
+expect_count "untagged: exactly one in the fixture" 1 "$TAUDIT" untagged-digests
+
+expect_count "unlisted: a slug topics.md does not list is reported" 1 "$TAUDIT" \
+  unlisted-topics "page=summary/s-bogus.md" "topic=bogus-topic"
+expect_count "unlisted: a listed slug is not" 0 "$TAUDIT" \
+  unlisted-topics "page=summary/s-block.md"
+expect_count "unlisted: exactly one in the fixture" 1 "$TAUDIT" unlisted-topics
+
+expect_count "page-missing: a listed topic with no page is reported" 1 "$TAUDIT" \
+  topic-page-missing "slug=beta-topic" "title=Beta Topic" "members=2"
+expect_count "page-missing: so is misc" 1 "$TAUDIT" topic-page-missing "slug=misc"
+expect_count "page-missing: a listed topic with a page is not" 0 "$TAUDIT" \
+  topic-page-missing "slug=alpha-topic"
+expect_count "page-missing: exactly two" 2 "$TAUDIT" topic-page-missing
+
+expect_count "dir-stray: a topic/ file not on the list is reported" 1 "$TAUDIT" \
+  topic-dir-stray "page=topic/Stray Page.md"
+expect_count "dir-stray: a listed topic's page is not" 0 "$TAUDIT" \
+  topic-dir-stray "page=topic/Alpha Topic.md"
+expect_count "dir-stray: exactly one" 1 "$TAUDIT" topic-dir-stray
+
+expect_count "name-clash: a note titled like a listed topic (any case) is reported" 1 "$TAUDIT" \
+  note-topic-name-clash "page=note/beta topic.md" "topic=Beta Topic"
+expect_count "name-clash: an ordinary note is not" 0 "$TAUDIT" \
+  note-topic-name-clash "page=note/Fine Note.md"
+expect_count "name-clash: exactly one" 1 "$TAUDIT" note-topic-name-clash
+
+expect_count "topic-oversized: nothing is over the default of 60" 0 "$TAUDIT" topic-oversized
+curate_ro "$SANDBOX/t-audit2.json" audit --json --split-at 2
+expect_rc "topics-wiki: audit --split-at 2 succeeds" 0 $RC
+expect_count "topic-oversized: --split-at 2 flags the 3-member topic" 1 "$SANDBOX/t-audit2.json" \
+  topic-oversized "slug=alpha-topic" "members=3" "split_at=2"
+expect_count "topic-oversized: the 2-member topic is not over 2" 0 "$SANDBOX/t-audit2.json" \
+  topic-oversized "slug=beta-topic"
+expect_count "topic-oversized: exactly one at --split-at 2" 1 "$SANDBOX/t-audit2.json" topic-oversized
+
+expect_count "index-drift: a listed title with no section is missing" 1 "$TAUDIT" \
+  index-sections-drift "issue=missing" "heading=Beta Topic"
+expect_count "index-drift: misc's title too" 1 "$TAUDIT" \
+  index-sections-drift "issue=missing" "heading=Miscellany"
+expect_count "index-drift: a section that is not a topic is unexpected" 1 "$TAUDIT" \
+  index-sections-drift "issue=unexpected" "heading=Wrong Heading"
+expect_count "index-drift: an H2 BEFORE ## Topics is not compared" 0 "$TAUDIT" \
+  index-sections-drift "heading=Preamble"
+expect_count "index-drift: a matching section is not reported" 0 "$TAUDIT" \
+  index-sections-drift "heading=Alpha Topic"
+expect_count "index-drift: exactly three findings" 3 "$TAUDIT" index-sections-drift
+
+# The other index shapes, each a fresh audit. The one that has to stay quiet is
+# the correct one; the ones that must fire are wrong in one specific way.
+printf '# Wiki Index\n\n## Preamble\n\nIgnored.\n\n## Topics\n\n- x\n\n## Alpha Topic\n\n## Beta Topic\n\n## Miscellany\n' > "$T/index.md"
+curate_ro "$SANDBOX/t-idx-ok.json" audit --json
+expect_count "index-drift: sections after ## Topics equal to the titles in order -> quiet" 0 \
+  "$SANDBOX/t-idx-ok.json" index-sections-drift
+printf '# Wiki Index\n\n## Preamble\n\n## Alpha Topic\n\n## Beta Topic\n\n## Miscellany\n' > "$T/index.md"
+curate_ro "$SANDBOX/t-idx-notopics.json" audit --json
+expect_count "index-drift: without a ## Topics heading every H2 is compared" 1 \
+  "$SANDBOX/t-idx-notopics.json" index-sections-drift "issue=unexpected" "heading=Preamble"
+expect_count "index-drift: ... and that is the only finding" 1 \
+  "$SANDBOX/t-idx-notopics.json" index-sections-drift
+printf '# Wiki Index\n\n## Alpha Topic\n\n## Beta Topic\n\n## Miscellany\n' > "$T/index.md"
+curate_ro "$SANDBOX/t-idx-plain.json" audit --json
+expect_count "index-drift: no ## Topics, H2s exactly the titles -> quiet" 0 \
+  "$SANDBOX/t-idx-plain.json" index-sections-drift
+printf '# Wiki Index\n\n## Topics\n\n## Beta Topic\n\n## Alpha Topic\n\n## Miscellany\n' > "$T/index.md"
+curate_ro "$SANDBOX/t-idx-order.json" audit --json
+expect_count "index-drift: the right sections in the wrong order is one finding" 1 \
+  "$SANDBOX/t-idx-order.json" index-sections-drift "issue=out of order" "position=1" "expected=Alpha Topic"
+expect_count "index-drift: ... and only one" 1 "$SANDBOX/t-idx-order.json" index-sections-drift
+git -C "$T" checkout -q -- index.md
+
+# --- topics subcommand -------------------------------------------------------
+TTOP="$SANDBOX/t-topics.json"
+curate_ro "$TTOP" topics --json --split-at 2
+expect_rc "topics: --json succeeds" 0 $RC
+expect_j "topics: rows are in topics.md order" "['alpha-topic', 'beta-topic', 'misc']" "$TTOP" \
+  '[r["slug"] for r in d["topics"]]'
+expect_j "topics: members counted from block, flow and scalar topics:" "[3, 2, 1]" "$TTOP" \
+  '[r["members"] for r in d["topics"]]'
+expect_j "topics: alpha's members are the tagged digests" "['summary/s-alpha3', 'summary/s-block', 'summary/s-flow']" "$TTOP" \
+  'd["topics"][0]["sources"]'
+expect_j "topics: page presence" "[True, False, False]" "$TTOP" '[r["page_exists"] for r in d["topics"]]'
+alpha_words=$(wc -w < "$T/topic/Alpha Topic.md" | tr -d ' ')
+expect_j "topics: words of the existing page, 0 for absent" "[$alpha_words, 0, 0]" "$TTOP" \
+  '[r["words"] for r in d["topics"]]'
+expect_j "topics: last_compiled read from the footer" "['2026-08-10', None, None]" "$TTOP" \
+  '[r["last_compiled"] for r in d["topics"]]'
+expect_j "topics: over at --split-at 2 is the 3-member topic only" "[True, False, False]" "$TTOP" \
+  '[r["over"] for r in d["topics"]]'
+expect_j "topics: the split threshold is reported" "2" "$TTOP" 'd["split_at"]'
+expect_j "topics: misc members with their digest titles" "[('summary/s-misc', 'A Misc Source')]" "$TTOP" \
+  '[(m["page"], m["title"]) for m in d["misc"]]'
+expect_j "topics: title is carried" "Beta Topic" "$TTOP" 'd["topics"][1]["title"]'
+
+curate_ro "$SANDBOX/t-topics.txt" topics --split-at 2
+expect_rc "topics: human format succeeds" 0 $RC
+grep -q 'alpha-topic .*Alpha Topic  OVER$' "$SANDBOX/t-topics.txt" \
+  || { echo "FAIL: topics — alpha row not marked OVER: $(cat "$SANDBOX/t-topics.txt")"; fail=1; }
+grep -q 'beta-topic .*Beta Topic$' "$SANDBOX/t-topics.txt" \
+  || { echo "FAIL: topics — beta row wrong or marked OVER"; fail=1; }
+grep -q 'summary/s-misc  A Misc Source' "$SANDBOX/t-topics.txt" \
+  || { echo "FAIL: topics — misc member not listed: $(cat "$SANDBOX/t-topics.txt")"; fail=1; }
+echo "ok: topics: human table marks OVER and lists misc"
+curate_ro "$SANDBOX/t-topics-default.txt" topics
+grep -q 'OVER' "$SANDBOX/t-topics-default.txt" \
+  && { echo "FAIL: topics — something is OVER at the default threshold of 60"; fail=1; }
+grep -q '0 over 60 members' "$SANDBOX/t-topics-default.txt" \
+  || { echo "FAIL: topics — default threshold is not 60: $(tail -5 "$SANDBOX/t-topics-default.txt")"; fail=1; }
+echo "ok: topics: default --split-at is 60"
+
+# --- sources: resolved through the list --------------------------------------
+curate_ro "$SANDBOX/t-src-slug.json" sources --theme alpha-topic --json
+expect_rc "sources: a slug resolves" 0 $RC
+expect_stat "sources: theme is the title" "Alpha Topic" "$SANDBOX/t-src-slug.json" theme
+expect_stat "sources: path is topic/<title>.md" "topic/Alpha Topic.md" "$SANDBOX/t-src-slug.json" path
+expect_stat "sources: provenance is declared-topics" declared-topics "$SANDBOX/t-src-slug.json" provenance
+expect_j "sources: the set is the 3 tag members, not the footer's 2" \
+  "['summary/s-alpha3.md', 'summary/s-block.md', 'summary/s-flow.md']" "$SANDBOX/t-src-slug.json" 'd["sources"]'
+expect_stat "sources: slug is carried" alpha-topic "$SANDBOX/t-src-slug.json" slug
+expect_stat "sources: scope is carried for the compile prompt" "The first topic." "$SANDBOX/t-src-slug.json" scope
+
+curate_ro "$SANDBOX/t-src-title.json" sources --theme "beta TOPIC" --json
+expect_rc "sources: a title resolves, case-insensitively" 0 $RC
+expect_stat "sources: an absent page still has its path from topics.md" "topic/Beta Topic.md" "$SANDBOX/t-src-title.json" path
+expect_stat "sources: ... and page_exists false" False "$SANDBOX/t-src-title.json" page_exists
+expect_stat "sources: ... and 0 words" 0 "$SANDBOX/t-src-title.json" words
+expect_j "sources: the scalar-tagged digest is a member" "['summary/s-block.md', 'summary/s-scalar.md']" \
+  "$SANDBOX/t-src-title.json" 'd["sources"]'
+
+curate_ro "$SANDBOX/t-src-none.json" sources --theme "Stray Page" --json
+expect_rc "sources: an existing topic/ page that is not listed is refused with 3" 3 $RC
+grep -q "not a listed topic; add it to topics.md and retag" "$SANDBOX/t-src-none.json.err" \
+  || { echo "FAIL: sources — wrong refusal message: $(cat "$SANDBOX/t-src-none.json.err")"; fail=1; }
+[ -s "$SANDBOX/t-src-none.json" ] && { echo "FAIL: sources — refused but printed output"; fail=1; }
+echo "ok: sources: the refusal names the fix"
+
+# --- dirty: tag arithmetic ---------------------------------------------------
+# State B: one alpha digest edited (body only), one new misc digest. Alpha and
+# misc are dirty; beta is not. With --min 3 only alpha qualifies.
+printf '\nAn extra paragraph.\n' >> "$T/summary/s-flow.md"
+tdigest s-new "New Misc Source" 'topics:' '  - misc'
+git -C "$T" add -A && git -C "$T" commit -q -m "state B"
+
+curate_ro "$SANDBOX/t-dirty.txt" dirty --since "$STATE_A"
+expect_rc "dirty: succeeds" 0 $RC
+expect_out_dirty=$(printf 'Alpha Topic\nMiscellany')
+if [ "$(cat "$SANDBOX/t-dirty.txt")" = "$expect_out_dirty" ]; then
+  echo "ok: dirty: the topics the changed digests list, most-changed first, as titles"
+else
+  echo "FAIL: dirty — got: $(cat "$SANDBOX/t-dirty.txt" | tr '\n' '|')"; fail=1
+fi
+grep -q "2 digest(s) changed; 2 theme(s) dirty" "$SANDBOX/t-dirty.txt.err" \
+  || { echo "FAIL: dirty — summary line: $(cat "$SANDBOX/t-dirty.txt.err")"; fail=1; }
+curate_ro "$SANDBOX/t-dirty.json" dirty --since "$STATE_A" --json
+expect_j "dirty: --json carries slug, member and changed counts" \
+  "[('alpha-topic', 3, 1), ('misc', 2, 1)]" "$SANDBOX/t-dirty.json" \
+  '[(r["slug"], r["sources"], r["changed"]) for r in d]'
+curate_ro "$SANDBOX/t-dirty-min.txt" dirty --since "$STATE_A" --min 3
+[ "$(cat "$SANDBOX/t-dirty-min.txt")" = "Alpha Topic" ] \
+  && echo "ok: dirty: --min excludes a small dirty topic" \
+  || { echo "FAIL: dirty --min 3 — got: $(cat "$SANDBOX/t-dirty-min.txt")"; fail=1; }
+curate_ro "$SANDBOX/t-dirty-none.txt" dirty --since HEAD
+grep -q "No digests changed" "$SANDBOX/t-dirty-none.txt" \
+  && echo "ok: dirty: nothing changed is said plainly" \
+  || { echo "FAIL: dirty --since HEAD — got: $(cat "$SANDBOX/t-dirty-none.txt")"; fail=1; }
+
+# --- the same wiki with topics.md set aside: legacy behaviour ----------------
+# Not deleted from git, just moved off disk for these runs, so the Vault sees
+# the pre-topics world: sources come from the footer, dirty from provenance.
+mv "$T/topics.md" "$SANDBOX/topics.md.aside"
+curate_ro "$SANDBOX/t-legacy-src.json" sources --theme "Alpha Topic" --json
+expect_rc "legacy: sources still resolves an existing page" 0 $RC
+expect_stat "legacy: provenance is 'declared' (the footer)" declared "$SANDBOX/t-legacy-src.json" provenance
+expect_j "legacy: the set is the footer's 2, not the tags' 3" \
+  "['summary/s-block.md', 'summary/s-flow.md']" "$SANDBOX/t-legacy-src.json" 'd["sources"]'
+curate_ro "$SANDBOX/t-legacy-none.json" sources --theme "Beta Topic" --json
+expect_rc "legacy: a title with no page is exit 4, as before" 4 $RC
+curate_ro "$SANDBOX/t-legacy-dirty.txt" dirty --since "$STATE_A"
+[ "$(cat "$SANDBOX/t-legacy-dirty.txt")" = "Alpha Topic" ] \
+  && echo "ok: legacy: dirty comes from the page's provenance (misc has no page)" \
+  || { echo "FAIL: legacy dirty — got: $(cat "$SANDBOX/t-legacy-dirty.txt")"; fail=1; }
+curate_ro "$SANDBOX/t-legacy-audit.json" audit --json
+for chk in untagged-digests unlisted-topics topic-page-missing topic-dir-stray \
+           note-topic-name-clash topic-oversized index-sections-drift; do
+  expect_count "legacy: $chk goes quiet the moment topics.md is gone" 0 "$SANDBOX/t-legacy-audit.json" "$chk"
+done
+mv "$SANDBOX/topics.md.aside" "$T/topics.md"
+
+# --- a malformed topics.md is a clean error, not a traceback -----------------
+B="$SANDBOX/badwiki"; mkdir -p "$B/topic"
+grep -v '| misc |' "$T/topics.md" > "$B/topics.md"
+WIKI_PATH="$B" "$BIN/wiki-curate" audit >/dev/null 2>"$SANDBOX/e-badtopics"
+expect_rc "bad topics.md: exit 2" 2 $?
+grep -q "no 'misc' row" "$SANDBOX/e-badtopics" \
+  || { echo "FAIL: bad topics.md — message: $(cat "$SANDBOX/e-badtopics")"; fail=1; }
+grep -q "Traceback" "$SANDBOX/e-badtopics" \
+  && { echo "FAIL: bad topics.md — traceback"; fail=1; }
 
 [ "$fail" = 0 ] && echo "test-curate: ALL PASS"
 exit $fail
