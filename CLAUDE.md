@@ -16,7 +16,7 @@ A Claude Code plugin that ingests URLs into an Obsidian wiki.
   - `wiki-recompile` — drives `wiki-compile` serially, auditing before and after. `--since REF` selects only the themes a batch touched; `--top` caps it.
   - `wiki-review` — renders a compile branch as a review report (per-page word/link deltas, dropped links, corpus audit delta). Built because a multi-page compile diff is otherwise unreviewable — it is what caught the compiler destroying cross-links.
 - `assets/wiki-CLAUDE.md` — the schema template seeded into a new wiki.
-- `tests/` — four suites, all offline with no real LLM: `test-fetch.sh` (extraction, fixture-based), `test-guard.sh` (completeness guard + `--summary-only`), `test-curate.sh` (the corpus index and every audit check), `test-compile.sh` (the compile safety gates and the recompile driver). The latter two are mutation-tested: deliberately reintroducing each fixed bug turns them red.
+- `tests/` — five suites, all offline with no real LLM: `test-fetch.sh` (extraction, fixture-based), `test-guard.sh` (completeness guard + `--summary-only`), `test-curate.sh` (the corpus index and every audit check), `test-compile.sh` (the compile safety gates and the recompile driver), `test-meta.sh` (frontmatter read/write byte-fidelity, `topics.md` validation, every `normalize-topics` branch). The latter three are mutation-tested: deliberately reintroducing each fixed bug turns them red.
 
 ## Testing
 

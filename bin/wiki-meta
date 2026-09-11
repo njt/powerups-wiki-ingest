@@ -1,0 +1,593 @@
+#!/usr/bin/env python3
+"""wiki-meta — the one place summary frontmatter and topics.md are parsed and written.
+
+Every script that reads a digest's `topics:` list or the fixed topic list goes
+through this file, so the format is defined once and the tools agree. It is
+deterministic: no LLM, no network, no git.
+
+    wiki-meta topics [--wiki DIR] [--json]
+        Parse <wiki>/topics.md (the first markdown table with slug, title and
+        scope columns, any order). One line per topic, slug<TAB>title<TAB>scope,
+        or a JSON list of {slug, title, scope}. Exit 3 if topics.md is absent,
+        2 if a row fails validation (the message names the row).
+
+    wiki-meta get FILE KEY
+        Print a frontmatter value: a scalar, or a list one item per line. Flow
+        lists `[a, b]` and block lists are both read; matching quotes are
+        stripped. Exit 1 if the key is absent.
+
+    wiki-meta set [--list] FILE KEY VALUE [VALUE...]
+        Rewrite exactly that key inside the frontmatter and leave every other
+        byte alone. One VALUE writes a scalar unless --list is given; two or
+        more write a block list. An existing key is replaced where it stands
+        (a block list's continuation lines go with it); a missing key is added
+        before the closing `---`; a file with no frontmatter gets one. The
+        write is atomic (temp file + rename).
+
+    wiki-meta normalize-topics [--wiki DIR] FILE
+        The ingest repair. Each `topics:` entry is mapped: an exact slug is
+        kept; a case-insensitive match on a slug or a title becomes the slug;
+        anything else is dropped with a warning on stderr. Duplicates collapse,
+        more than two truncate to two, nothing left becomes `misc`. The key is
+        written back in block form only if something changed (a list that was
+        right but written in flow form counts). Exit 0 when the file was left
+        alone, 1 when it was rewritten (one line on stdout says what), 2 on
+        error.
+
+Config: WIKI_PATH, or --wiki, for the subcommands that need topics.md.
+
+Importable: the file has no .py extension, so spec_from_file_location needs an
+explicit loader (without one it returns None for a name it cannot type):
+
+    from importlib.machinery import SourceFileLoader
+    from importlib.util import spec_from_file_location, module_from_spec
+    spec = spec_from_file_location("wiki_meta", path, loader=SourceFileLoader("wiki_meta", path))
+    wiki_meta = module_from_spec(spec); spec.loader.exec_module(wiki_meta)
+
+The functions other scripts rely on:
+
+    parse_frontmatter(text) -> (meta, body)   meta values are str or list
+    set_key(text, key, value_or_list) -> text
+    load_topics(wiki) -> [{slug, title, scope}, ...]   raises TopicsMissing / MetaError
+    normalize(entries, topic_list) -> (new_list, dropped, changed)
+
+Lists are always written in block form (see the design ledger, A12: Obsidian
+rewrites flow lists and fails silently on malformed ones).
+
+Python 3.8+, standard library only.
+"""
+
+import argparse
+import json
+import os
+import re
+import sys
+import tempfile
+import unicodedata
+
+PROG = "wiki-meta"
+
+# A key line, matched against the stripped line exactly as wiki-curate does, so
+# that everything its tolerant parser accepted is accepted here.
+KEY_RE = re.compile(r"^([A-Za-z_][A-Za-z0-9_-]*):\s*(.*)$")
+SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
+# Split keeping the newline on each line, splitting on \n only (str.splitlines
+# also splits on \x0c, \x1c and friends, which would move bytes around).
+LINE_SPLIT = re.compile(r"(?<=\n)")
+TABLE_SEP_CELL = re.compile(r"^:?-+:?$")
+TOPICS_FILE = "topics.md"
+TOPICS_KEY = "topics"
+MAX_TOPICS = 2
+FALLBACK_SLUG = "misc"
+
+
+class MetaError(Exception):
+    """A user-facing error; `code` is the process exit status."""
+
+    def __init__(self, msg, code=2):
+        super().__init__(msg)
+        self.code = code
+
+
+class TopicsMissing(MetaError):
+    def __init__(self, path):
+        super().__init__(f"no {TOPICS_FILE} at {path}", code=3)
+
+
+def nfc(s):
+    """Composed form, for comparing titles and filenames (see wiki-curate)."""
+    return unicodedata.normalize("NFC", s)
+
+
+# --- frontmatter: reading ------------------------------------------------------
+
+def _lines(text):
+    return [ln for ln in LINE_SPLIT.split(text) if ln != ""]
+
+
+def _is_item(stripped):
+    return stripped == "-" or stripped.startswith("- ") or stripped.startswith("-\t")
+
+
+def _unquote(v):
+    v = v.strip()
+    if len(v) >= 2 and v[0] == v[-1] and v[0] in "\"'":
+        inner = v[1:-1]
+        if v[0] == '"':
+            return (inner.replace('\\"', '"').replace("\\n", "\n")
+                    .replace("\\t", "\t").replace("\\\\", "\\"))
+        return inner.replace("''", "'")
+    return v
+
+
+def _split_flow(inner):
+    """Split the inside of `[...]` on commas that are outside quotes."""
+    items, buf, quote = [], "", None
+    for ch in inner:
+        if quote:
+            buf += ch
+            if ch == quote:
+                quote = None
+        elif ch in "\"'":
+            quote = ch
+            buf += ch
+        elif ch == ",":
+            items.append(buf)
+            buf = ""
+        else:
+            buf += ch
+    items.append(buf)
+    out = [_unquote(i) for i in items]
+    if out == [""]:
+        return []
+    return [i for i in out if i != ""]
+
+
+def _split_frontmatter(text):
+    """Return (lines, close_index) when `text` opens with frontmatter, else None.
+
+    Same acceptance as wiki-curate: the file starts with `---` and a later line
+    starts with `---`. Lines 1..close-1 are the frontmatter body.
+    """
+    if not text.startswith("---"):
+        return None
+    lines = _lines(text)
+    for i in range(1, len(lines)):
+        if lines[i].startswith("---"):
+            return lines, i
+    return None
+
+
+def _parse_inner(lines, start, end):
+    """Parse frontmatter lines[start:end] into entries.
+
+    Each entry is {key, value, form, start, end}: `form` is one of scalar,
+    empty, flow, block; `start`/`end` are line indices into `lines`, end
+    exclusive, covering the key line and its continuation lines.
+    """
+    entries = []
+    cur = None
+    for idx in range(start, end):
+        raw = lines[idx].rstrip("\r\n")
+        st = raw.strip()
+        indented = raw[:1] in (" ", "\t")
+        if st == "" or st.startswith("#"):
+            continue
+        if _is_item(st):
+            if cur is not None:
+                if cur["form"] in ("empty", "block"):
+                    cur["form"] = "block"
+                    cur["value"].append(_unquote(st[1:]))
+                cur["end"] = idx + 1
+            continue
+        m = KEY_RE.match(st)
+        # An indented line is a continuation of the key above it (a block
+        # scalar, a wrapped value) unless nothing is open, or the key above is
+        # a plain scalar — then an indented `key: value` is a stray key, which
+        # is how wiki-curate reads it.
+        if m and (not indented or cur is None
+                  or (cur["form"] == "scalar" and cur["value"] not in ("|", ">"))):
+            key, val = m.group(1), m.group(2).strip()
+            if val == "":
+                cur = {"key": key, "value": [], "form": "empty"}
+            elif val.startswith("[") and val.endswith("]"):
+                cur = {"key": key, "value": _split_flow(val[1:-1]), "form": "flow"}
+            else:
+                cur = {"key": key, "value": _unquote(val), "form": "scalar"}
+            cur["start"], cur["end"] = idx, idx + 1
+            entries.append(cur)
+            continue
+        if indented and cur is not None:
+            cur["end"] = idx + 1
+    return entries
+
+
+def _entries(text):
+    fm = _split_frontmatter(text)
+    if fm is None:
+        return None, None, []
+    lines, close = fm
+    return lines, close, _parse_inner(lines, 1, close)
+
+
+def _meta_from(entries):
+    meta = {}
+    for e in entries:
+        v = e["value"]
+        if e["form"] == "empty":
+            v = ""
+        meta[e["key"]] = v
+    return meta
+
+
+def parse_frontmatter(text):
+    """Return (meta, body). Tolerant: the corpus predates any schema.
+
+    meta values are str for scalars and list for flow or block lists. A key
+    with no value and no items is the empty string. Without frontmatter the
+    result is ({}, text).
+    """
+    lines, close, entries = _entries(text)
+    if lines is None:
+        return {}, text
+    return _meta_from(entries), "".join(lines[close + 1:])
+
+
+def key_form(text, key):
+    """How `key` is written: scalar, empty, flow, block, or None if absent."""
+    _, _, entries = _entries(text)
+    form = None
+    for e in entries:
+        if e["key"] == key:
+            form = e["form"]
+    return form
+
+
+def get_key(text, key):
+    """The value of `key` (str or list), or None if absent."""
+    return parse_frontmatter(text)[0].get(key)
+
+
+# --- frontmatter: writing ------------------------------------------------------
+
+_PLAIN_UNSAFE_LEAD = set("[]{}#&*!|>'\"%@`")
+_RESERVED_WORDS = {"true", "false", "null", "~", "yes", "no", "on", "off"}
+
+
+def _fmt_scalar(v):
+    """Render a scalar so the tolerant parser (and Obsidian) reads it back as-is."""
+    v = "" if v is None else str(v)
+    needs = (
+        v == ""
+        or v != v.strip()
+        or v[0] in _PLAIN_UNSAFE_LEAD
+        or (v[0] in "-?:" and (len(v) == 1 or v[1] in " \t"))
+        or ": " in v or " #" in v or v.endswith(":")
+        or "\n" in v or "\t" in v
+        or v.lower() in _RESERVED_WORDS
+    )
+    if not needs:
+        return v
+    esc = (v.replace("\\", "\\\\").replace('"', '\\"')
+           .replace("\n", "\\n").replace("\t", "\\t"))
+    return f'"{esc}"'
+
+
+def _render(key, value, nl):
+    if isinstance(value, (list, tuple)):
+        if not value:
+            return [f"{key}: []{nl}"]
+        return [f"{key}:{nl}"] + [f"  - {_fmt_scalar(v)}{nl}" for v in value]
+    return [f"{key}: {_fmt_scalar(value)}{nl}"]
+
+
+def _newline_of(line, default="\n"):
+    if line.endswith("\r\n"):
+        return "\r\n"
+    if line.endswith("\n"):
+        return "\n"
+    return default
+
+
+def set_key(text, key, value):
+    """Return `text` with frontmatter `key` set to `value` (str -> scalar,
+    list -> block list). Every byte outside that key is preserved. The first
+    occurrence is replaced in place; any duplicate occurrences are removed
+    (otherwise a reader that takes the last value would still see the old
+    one). A missing key is appended before the closing `---`; a file with no
+    frontmatter gets one prepended.
+    """
+    lines, close, entries = _entries(text)
+    if lines is None:
+        nl = _newline_of(_lines(text)[0]) if text else "\n"
+        new = [f"---{nl}"] + _render(key, value, nl) + [f"---{nl}"]
+        return "".join(new) + text
+    nl = _newline_of(lines[0])
+    fresh = _render(key, value, nl)
+    spans = [(e["start"], e["end"]) for e in entries if e["key"] == key]
+    if not spans:
+        # The closing line may lack a newline; the inserted lines carry their own.
+        return "".join(lines[:close] + fresh + lines[close:])
+    out = list(lines)
+    for s, e in sorted(spans, reverse=True):
+        # Replacing from the end keeps the earlier indices valid; the first
+        # span in file order is the one that receives the new lines.
+        out[s:e] = fresh if (s, e) == spans[0] else []
+    return "".join(out)
+
+
+def read_text(path):
+    try:
+        with open(path, "r", encoding="utf-8", newline="") as fh:
+            return fh.read()
+    except OSError as exc:
+        raise MetaError(f"cannot read {path}: {exc.strerror}")
+
+
+def write_text_atomic(path, text):
+    """Write via a temp file in the same directory and rename over `path`."""
+    d = os.path.dirname(os.path.abspath(path)) or "."
+    fd, tmp = tempfile.mkstemp(prefix=".wiki-meta.", dir=d)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="") as fh:
+            fh.write(text)
+        if os.path.exists(path):
+            os.chmod(tmp, os.stat(path).st_mode & 0o7777)
+        os.replace(tmp, path)
+    except OSError as exc:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise MetaError(f"cannot write {path}: {exc.strerror}")
+
+
+# --- topics.md -----------------------------------------------------------------
+
+def _table_cells(line):
+    s = line.strip()
+    if s.startswith("|"):
+        s = s[1:]
+    if s.endswith("|") and not s.endswith("\\|"):
+        s = s[:-1]
+    cells = re.split(r"(?<!\\)\|", s)
+    return [c.replace("\\|", "|").strip() for c in cells]
+
+
+def parse_topics_text(text, where=TOPICS_FILE):
+    """Parse the topics table out of markdown; validate; return the list."""
+    lines = text.splitlines()
+    header, col, first_row = None, None, None
+    for i, ln in enumerate(lines):
+        if not ln.lstrip().startswith("|"):
+            continue
+        names = [c.lower() for c in _table_cells(ln)]
+        if {"slug", "title", "scope"} <= set(names):
+            header = i
+            col = {n: names.index(n) for n in ("slug", "title", "scope")}
+            break
+    if header is None:
+        raise MetaError(f"{where}: no table with slug, title and scope columns")
+    first_row = header + 1
+    if first_row < len(lines) and lines[first_row].lstrip().startswith("|"):
+        cells = _table_cells(lines[first_row])
+        if cells and all(TABLE_SEP_CELL.match(c) for c in cells if c != ""):
+            first_row += 1
+    topics = []
+    seen_slug, seen_title = {}, {}
+    for i in range(first_row, len(lines)):
+        ln = lines[i]
+        if not ln.lstrip().startswith("|"):
+            break
+        cells = _table_cells(ln)
+        row = f"{where} line {i + 1}"
+        need = max(col.values()) + 1
+        if len(cells) < need:
+            raise MetaError(f"{row}: expected {need} columns, got {len(cells)}: {ln.strip()}")
+        slug = cells[col["slug"]]
+        title = cells[col["title"]]
+        scope = cells[col["scope"]]
+        if not SLUG_RE.match(slug):
+            raise MetaError(f"{row}: slug {slug!r} must match ^[a-z0-9][a-z0-9-]*$")
+        if slug in seen_slug:
+            raise MetaError(f"{row}: duplicate slug {slug!r} (first at line {seen_slug[slug]})")
+        if title == "":
+            raise MetaError(f"{row}: empty title for slug {slug!r}")
+        if "/" in title:
+            raise MetaError(f"{row}: title {title!r} contains '/' and cannot be a page name")
+        tkey = nfc(title).casefold()
+        if tkey in seen_title:
+            raise MetaError(f"{row}: duplicate title {title!r} (first at line {seen_title[tkey]})")
+        seen_slug[slug] = i + 1
+        seen_title[tkey] = i + 1
+        topics.append({"slug": slug, "title": title, "scope": scope})
+    if not topics:
+        raise MetaError(f"{where}: the topics table has no rows")
+    if FALLBACK_SLUG not in seen_slug:
+        raise MetaError(f"{where}: no {FALLBACK_SLUG!r} row; it is required")
+    return topics
+
+
+def topics_path(wiki):
+    return os.path.join(wiki, TOPICS_FILE)
+
+
+def load_topics(wiki):
+    """Parse <wiki>/topics.md. Raises TopicsMissing (code 3) or MetaError (2)."""
+    path = topics_path(wiki)
+    if not os.path.isfile(path):
+        raise TopicsMissing(path)
+    return parse_topics_text(read_text(path), where=path)
+
+
+def resolve_topic(entry, topic_list):
+    """The slug `entry` denotes, or None. Exact slug first, then a
+    case-insensitive (NFC) match on a slug or a title."""
+    entry = str(entry).strip()
+    slugs = [t["slug"] for t in topic_list]
+    if entry in slugs:
+        return entry
+    key = nfc(entry).casefold()
+    for t in topic_list:
+        if nfc(t["slug"]).casefold() == key or nfc(t["title"]).casefold() == key:
+            return t["slug"]
+    return None
+
+
+def _as_entries(value):
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [p.strip() for p in value.split(",") if p.strip()]
+    return [str(v).strip() for v in value if str(v).strip()]
+
+
+def normalize(entries, topic_list):
+    """Repair a `topics:` value against the list.
+
+    `entries` is the parsed value: a list, a scalar (split on commas), or
+    None. Returns (new_list, dropped, changed): dropped is every input entry
+    that did not make it (unresolvable, or beyond the second); changed is
+    whether new_list differs from the input.
+    """
+    orig = _as_entries(entries)
+    out, dropped = [], []
+    for e in orig:
+        slug = resolve_topic(e, topic_list)
+        if slug is None:
+            dropped.append(e)
+        elif slug not in out:
+            if len(out) < MAX_TOPICS:
+                out.append(slug)
+            else:
+                dropped.append(e)
+    if not out:
+        out = [FALLBACK_SLUG]
+    return out, dropped, out != orig
+
+
+# --- CLI -----------------------------------------------------------------------
+
+def resolve_wiki(arg):
+    wiki = arg or os.environ.get("WIKI_PATH")
+    if not wiki:
+        raise MetaError("WIKI_PATH is not set and --wiki was not given.\n"
+                        "  export WIKI_PATH=/path/to/wiki")
+    wiki = os.path.expanduser(wiki)
+    if not os.path.isdir(wiki):
+        raise MetaError(f"not a directory: {wiki}")
+    return wiki
+
+
+def cmd_topics(args):
+    topics = load_topics(resolve_wiki(args.wiki))
+    if args.json:
+        json.dump(topics, sys.stdout, ensure_ascii=False, indent=2)
+        sys.stdout.write("\n")
+    else:
+        for t in topics:
+            print(f"{t['slug']}\t{t['title']}\t{t['scope']}")
+    return 0
+
+
+def cmd_get(args):
+    value = get_key(read_text(args.file), args.key)
+    if value is None:
+        return 1
+    if isinstance(value, list):
+        for v in value:
+            print(v)
+    else:
+        print(value)
+    return 0
+
+
+def cmd_set(args):
+    values = args.value
+    if len(values) == 1 and not args.list:
+        new_value = values[0]
+    else:
+        new_value = list(values)
+    text = read_text(args.file) if os.path.exists(args.file) else ""
+    new_text = set_key(text, args.key, new_value)
+    if new_text != text:
+        write_text_atomic(args.file, new_text)
+    return 0
+
+
+def cmd_normalize_topics(args):
+    try:
+        topic_list = load_topics(resolve_wiki(args.wiki))
+    except TopicsMissing as exc:
+        # For this subcommand every failure is exit 2: the ingest guard treats
+        # 2 as "reject", and a wiki without topics.md should never call it.
+        raise MetaError(str(exc), code=2)
+    text = read_text(args.file)
+    meta, _ = parse_frontmatter(text)
+    form = key_form(text, TOPICS_KEY)
+    orig = _as_entries(meta.get(TOPICS_KEY))
+    new, dropped, changed = normalize(orig, topic_list)
+    for d in dropped:
+        why = ("more than two topics" if resolve_topic(d, topic_list)
+               else "not a listed topic")
+        print(f"{PROG}: {args.file}: dropped topic {d!r} ({why})", file=sys.stderr)
+    if not changed and form == "block":
+        return 0
+    write_text_atomic(args.file, set_key(text, TOPICS_KEY, new))
+    if form is None:
+        what = f"{TOPICS_KEY}: was missing; set to {new}"
+    elif changed:
+        what = f"{TOPICS_KEY}: repaired {orig} -> {new}"
+    else:
+        what = f"{TOPICS_KEY}: rewritten in block form ({form} -> block)"
+    print(f"{args.file}: {what}")
+    return 1
+
+
+def build_parser():
+    p = argparse.ArgumentParser(
+        prog=PROG,
+        description="Read and write summary frontmatter and topics.md.",
+        epilog="Exit codes: topics 3 when topics.md is absent, 2 on a validation "
+               "error; get 1 when the key is absent; normalize-topics 0 unchanged, "
+               "1 rewritten, 2 error.")
+    sub = p.add_subparsers(dest="cmd", metavar="COMMAND")
+    sub.required = True
+
+    t = sub.add_parser("topics", help="list the topics in <wiki>/topics.md")
+    t.add_argument("--wiki", help="wiki root (default: $WIKI_PATH)")
+    t.add_argument("--json", action="store_true", help="JSON list instead of TSV")
+    t.set_defaults(func=cmd_topics)
+
+    g = sub.add_parser("get", help="print one frontmatter value")
+    g.add_argument("file")
+    g.add_argument("key")
+    g.set_defaults(func=cmd_get)
+
+    s = sub.add_parser("set", help="rewrite one frontmatter key in place")
+    s.add_argument("--list", action="store_true",
+                   help="write a block list even with a single VALUE")
+    s.add_argument("file")
+    s.add_argument("key")
+    s.add_argument("value", nargs="+", metavar="VALUE")
+    s.set_defaults(func=cmd_set)
+
+    n = sub.add_parser("normalize-topics",
+                       help="repair a summary's topics: against topics.md")
+    n.add_argument("--wiki", help="wiki root (default: $WIKI_PATH)")
+    n.add_argument("file")
+    n.set_defaults(func=cmd_normalize_topics)
+    return p
+
+
+def main(argv=None):
+    args = build_parser().parse_args(argv)
+    try:
+        return args.func(args)
+    except MetaError as exc:
+        print(f"{PROG}: {exc}", file=sys.stderr)
+        return exc.code
+
+
+if __name__ == "__main__":
+    sys.exit(main())
