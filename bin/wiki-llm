@@ -1,0 +1,139 @@
+#!/usr/bin/env python3
+"""wiki-llm — one chat-completions request, no tools, no agent loop.
+
+The single-call path for wiki-compile (WIKI_COMPILE_MODE=single) and
+wiki-ingest-run (WIKI_INGEST_MODE=single): the script assembles everything the
+model needs into one prompt, this sends it to an OpenAI-compatible endpoint,
+and the reply comes back on stdout for the script to validate and write.
+Measured on 2026-09-13 (wiki-model-prompt-optimise, SPEC-2): a topic compile in
+30 to 75 s against about 8 min through an agentic CLI.
+
+Usage:
+  wiki-llm --system FILE [--model M] [--effort low|high] [--max-tokens N] < user-prompt
+
+Env (flags win over env):
+  WIKI_LLM_BASE_URL     required, e.g. https://gw.lunaroute.com/v1
+  WIKI_LLM_MODEL        model name when --model is not given
+  WIKI_LLM_EFFORT       reasoning_effort when --effort is not given (omitted if unset)
+  WIKI_LLM_MAX_TOKENS   default 32000; gateways that reason count reasoning inside it
+  WIKI_LLM_TEMPERATURE  default 0.3
+  WIKI_LLM_TIMEOUT      seconds, default 1500
+  WIKI_LLM_API_KEY      the key, or
+  WIKI_LLM_KEY_FILE + WIKI_LLM_KEY_PATH   a JSON file and a dotted path into it
+                        (e.g. ~/.pi/agent/auth.json and lunaroute.key)
+
+Exit: 0 reply on stdout; 1 request failed (HTTP error, network, unparseable
+response, empty reply); 2 usage/config; 4 the reply was cut off at max_tokens
+(finish_reason "length"); nothing is printed on 1 or 4, so a caller can never
+write half a page. One retry after 30 s on 429, 5xx or a network error
+(WIKI_LLM_RETRY_WAIT overrides the wait). Usage and timing go to stderr. The
+key is never printed.
+"""
+import argparse
+import json
+import os
+import sys
+import time
+import urllib.error
+import urllib.request
+
+
+def die(code, msg):
+    sys.stderr.write("wiki-llm: %s\n" % msg)
+    sys.exit(code)
+
+
+def api_key():
+    k = os.environ.get("WIKI_LLM_API_KEY")
+    if k:
+        return k
+    kf, kp = os.environ.get("WIKI_LLM_KEY_FILE"), os.environ.get("WIKI_LLM_KEY_PATH")
+    if not (kf and kp):
+        die(2, "no key: set WIKI_LLM_API_KEY, or WIKI_LLM_KEY_FILE and WIKI_LLM_KEY_PATH")
+    try:
+        d = json.load(open(os.path.expanduser(kf)))
+        for part in kp.split("."):
+            d = d[part]
+    except (OSError, ValueError, KeyError, TypeError) as e:
+        die(2, "cannot read key %s from %s: %s" % (kp, kf, type(e).__name__))
+    return d
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--system", required=True, help="file holding the system prompt")
+    ap.add_argument("--model")
+    ap.add_argument("--effort")
+    ap.add_argument("--max-tokens", type=int)
+    a = ap.parse_args()
+    base = os.environ.get("WIKI_LLM_BASE_URL")
+    model = a.model or os.environ.get("WIKI_LLM_MODEL")
+    if not base:
+        die(2, "WIKI_LLM_BASE_URL is not set")
+    if not model:
+        die(2, "no model: pass --model or set WIKI_LLM_MODEL")
+    try:
+        system = open(a.system, encoding="utf-8").read()
+    except OSError as e:
+        die(2, "cannot read --system %s: %s" % (a.system, e))
+    user = sys.stdin.read()
+    if not user.strip():
+        die(2, "empty prompt on stdin")
+    effort = a.effort or os.environ.get("WIKI_LLM_EFFORT") or None
+    body = {
+        "model": model,
+        "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
+        "temperature": float(os.environ.get("WIKI_LLM_TEMPERATURE", "0.3")),
+        "max_tokens": a.max_tokens or int(os.environ.get("WIKI_LLM_MAX_TOKENS", "32000")),
+    }
+    if effort:
+        body["reasoning_effort"] = effort
+    key = api_key()
+    timeout = float(os.environ.get("WIKI_LLM_TIMEOUT", "1500"))
+    wait = float(os.environ.get("WIKI_LLM_RETRY_WAIT", "30"))
+    url = base.rstrip("/") + "/chat/completions"
+    data = json.dumps(body).encode()
+    raw, status, err = "", None, None
+    t0 = time.time()
+    for attempt in (1, 2):
+        req = urllib.request.Request(url, data=data, headers={
+            "Authorization": "Bearer " + key, "Content-Type": "application/json"})
+        err = None
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                status, raw = resp.status, resp.read().decode("utf-8", "replace")
+        except urllib.error.HTTPError as e:
+            status, raw = e.code, e.read().decode("utf-8", "replace")
+        except Exception as e:  # network, timeout
+            status, raw, err = None, "", "%s: %s" % (type(e).__name__, e)
+        retryable = status == 429 or (status is not None and status >= 500) or (
+            err is not None and "timed out" not in err)
+        if attempt == 1 and retryable:
+            sys.stderr.write("wiki-llm: %s, retrying in %.0f s\n" % (err or "HTTP %s" % status, wait))
+            time.sleep(wait)
+            continue
+        break
+    wall = time.time() - t0
+    if err:
+        die(1, "request failed after %.0f s: %s" % (wall, err))
+    if status != 200:
+        die(1, "HTTP %s after %.0f s: %s" % (status, wall, raw[:300].replace("\n", " ")))
+    try:
+        d = json.loads(raw)
+        choice = d["choices"][0]
+        content = (choice.get("message") or {}).get("content") or ""
+        finish = choice.get("finish_reason")
+    except (ValueError, KeyError, IndexError, TypeError) as e:
+        die(1, "unparseable response (%s): %s" % (type(e).__name__, raw[:300].replace("\n", " ")))
+    usage = d.get("usage") or {}
+    sys.stderr.write("wiki-llm: %s effort=%s %.1f s, prompt %s tok, completion %s tok, finish %s\n" % (
+        model, effort or "-", wall, usage.get("prompt_tokens"), usage.get("completion_tokens"), finish))
+    if finish == "length":
+        die(4, "reply cut off at max_tokens=%d; nothing written" % body["max_tokens"])
+    if not content.strip():
+        die(1, "empty reply")
+    sys.stdout.write(content if content.endswith("\n") else content + "\n")
+
+
+if __name__ == "__main__":
+    main()
