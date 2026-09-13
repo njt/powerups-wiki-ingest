@@ -33,6 +33,16 @@
 #   wiki-compile --theme "..." --branch curate/my-run
 #
 # Env: WIKI_PATH (required), WIKI_INGEST_CLI (default: claude)
+#   WIKI_COMPILE_MODE  agentic (default): $WIKI_INGEST_CLI reads the context and
+#                      writes the page with tools.
+#                      single: ONE chat-completions call through wiki-llm with
+#                      the context, the current page and its link list inlined;
+#                      the script writes the page, and every gate below still
+#                      applies. Needs WIKI_LLM_BASE_URL and a key (wiki-llm
+#                      --help). Measured 30-75 s a topic against ~8 min.
+#   WIKI_COMPILE_MODEL (default glm-5.3-flash-background), WIKI_COMPILE_EFFORT
+#   (default high), WIKI_COMPILE_MAX_TOKENS (default 32000), WIKI_LLM (default
+#   wiki-llm beside this script): single mode only.
 # Exit: 0 compiled  2 usage/config  3 not a listed topic / too few sources
 #       4 LLM failed  5 validation failed  6 the model never wrote the page
 set -euo pipefail
@@ -47,7 +57,7 @@ while [ $# -gt 0 ]; do
     --branch)  BRANCH="${2:-}"; shift 2 ;;
     --dry-run) DRY_RUN=1; shift ;;
     --keep)    KEEP=1; shift ;;
-    -h|--help) sed -n '2,37p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,48p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "wiki-compile: unknown argument: $1" >&2; exit 2 ;;
   esac
 done
@@ -57,6 +67,14 @@ done
 [ -d "$WIKI_PATH/topic" ] || [ -f "$WIKI_PATH/topics.md" ] \
   || { echo "wiki-compile: no topic/ under $WIKI_PATH" >&2; exit 2; }
 CLI="${WIKI_INGEST_CLI:-claude}"
+MODE="${WIKI_COMPILE_MODE:-agentic}"
+case "$MODE" in
+  agentic) ;;
+  single)
+    LLM="${WIKI_LLM:-$(dirname "$0")/wiki-llm}"
+    [ -x "$LLM" ] || { echo "wiki-compile: WIKI_COMPILE_MODE=single but $LLM is not executable" >&2; exit 2; } ;;
+  *) echo "wiki-compile: WIKI_COMPILE_MODE must be agentic or single, not '$MODE'" >&2; exit 2 ;;
+esac
 CURATE="$(dirname "$0")/wiki-curate"
 [ -x "$CURATE" ] || { echo "wiki-compile: wiki-curate not found beside me" >&2; exit 2; }
 
@@ -64,7 +82,11 @@ CURATE="$(dirname "$0")/wiki-curate"
 
 # --- Throwaway worktree: the live checkout must never move -------------------
 WT="$(mktemp -d "${TMPDIR:-/tmp}/wiki-compile-XXXXXX")"
+# Single mode's prompt and reply live OUTSIDE the worktree, so the
+# collateral-file check never sees them.
+SCRATCH=""
 cleanup() {
+  [ -n "$SCRATCH" ] && rm -rf "$SCRATCH"
   if [ "$KEEP" -eq 1 ]; then
     echo "wiki-compile: worktree kept at $WT" >&2; return
   fi
@@ -182,6 +204,7 @@ on the source, or list it under \"Also on This Theme\", so this page is also
 the directory of its notes. Those titles are real pages; never shorten them.
 "
 fi
+if [ "$MODE" = agentic ]; then
 set +e
 cat <<COMPILE_EOF | (cd "$WT" && "$CLI" -p --allowedTools "Read,Write" --add-dir "$WT")
 You are COMPILING a wiki theme page. Wiki root: $WT
@@ -265,6 +288,177 @@ COMPILE_EOF
 RC=$?
 set -e
 [ "$RC" -eq 0 ] || { echo "wiki-compile: LLM failed (exit $RC)" >&2; exit 4; }
+else
+# --- Single call: the context and the current page inlined, one request ------
+# The same instructions as the agentic prompt above, minus the file and git
+# rules the reply cannot break; the reply IS the page, and this script writes
+# it. Everything downstream -- the untouched-file check, the provenance footer,
+# the link gates, the collateral check -- runs exactly as for the agentic path.
+# Measured 2026-09-13 (wiki-model-prompt-optimise SPEC-2): 30-75 s a topic on
+# glm-5.3-flash at high effort, up to a 103k-token context, against ~8 min.
+SCRATCH="$(mktemp -d "${TMPDIR:-/tmp}/wiki-compile-single-XXXXXX")"
+{
+  printf "The wiki's CLAUDE.md (project instructions for the wiki you are working in):\n\n"
+  if [ -f "$WT/CLAUDE.md" ]; then cat "$WT/CLAUDE.md"; else printf '(none)\n'; fi
+} > "$SCRATCH/system.md"
+# Command substitution drops trailing newlines, which is what the block layout
+# below wants. Neither value is re-expanded inside the heredoc.
+# The length target scales with the evidence: ~1,200 words under 25 members,
+# 2,000 under 60, 3,000 above.
+if [ "$N_SRC" -lt 25 ]; then LENGTH_TARGET=1200; elif [ "$N_SRC" -lt 60 ]; then LENGTH_TARGET=2000; else LENGTH_TARGET=3000; fi
+# Every link the gate below will demand, extracted the way the gate extracts
+# them, spelled exactly as on the page: models that drop a link mostly drop it
+# silently, and a list they can check against is what stops that.
+# NB: single-quoted program, so no single quotes inside it.
+CUR_LINKS=$(PAGE="$WT/$PAGE_REL" python3 -c '
+import os, re
+t = open(os.environ["PAGE"], encoding="utf-8", errors="replace").read()
+t = re.sub(r"`[^`\n]*`", "", re.sub(r"^```.*?^```", "", t, flags=re.M | re.S))
+seen = []
+for x in re.findall(r"\[\[([^\]\[]+?)\]\]", t):
+    x = x.split("|")[0].split("#")[0].strip()
+    if not x.startswith(("summary/", "raw/")) and x not in seen:
+        seen.append(x)
+print("\n".join("[[" + x + "]]" for x in seen))
+')
+CTX_TEXT=$(cat "$CTX")
+CUR_TEXT=$(cat "$WT/$PAGE_REL")
+cat > "$SCRATCH/prompt.md" <<COMPILE_SINGLE_EOF
+You are COMPILING a wiki theme page.
+
+Read these two inputs first (both are reproduced in full at the end of this message):
+  1. The compilation context — the $N_SRC source digests this theme is built from.
+     Read ALL of it. It is the complete evidence base.
+  2. $PAGE_REL — the current version of this page.$CURRENT_NOTE
+
+Then return exactly one page: the new $PAGE_REL, as markdown. Return only the
+page: no preamble, no code fence, nothing after it.
+
+${SCOPE_BLOCK}WHAT YOU ARE DOING. This page is a DERIVED artifact. You are not appending to
+it — you are rebuilding it from all $N_SRC sources at once. That means you may
+and should REVISE: correct claims the evidence no longer supports, fix stale
+counts and dates, merge duplicated passages, drop what does not earn its place,
+and reorganise. Preserve genuinely good writing from the current version, but
+you are not obliged to keep its structure.
+
+WHAT MAKES THIS PAGE GOOD. It must ARGUE, not enumerate. A list of
+one-paragraph-per-source is a failure. The reader wants to know what this
+theme IS, what the sources collectively establish, where they DISAGREE, and
+what is still unknown. Synthesis means comparison: name the tension between
+sources, say which is more convincing and why.
+
+Required structure:
+
+# $THEME
+
+A one-paragraph thesis: what this theme is and what the wiki now believes
+about it. Sharp and falsifiable, not a topic sentence.
+
+---
+
+## The Argument
+
+The substance, organised by IDEA rather than by source. Cite other pages
+inline in double-bracket link syntax, using each page's EXACT existing title --
+never an abbreviation of it. Compare and contrast.
+
+## Where the Sources Disagree
+
+Genuine tensions. If there are none, omit this section entirely rather than
+inventing one.
+
+## What's Missing
+
+Gaps the evidence does not cover — the honest edges of what you can claim.
+
+## Also on This Theme
+
+EVERY double-bracket link that appeared in the current version of this page and which
+you have NOT woven into the sections above, as a bullet list with a few words
+each on what it covers. Omit this section only if there are none left over.
+
+---
+
+(Do NOT write a "Compiled from ..." provenance footer. The tool appends it
+from the authoritative source list after you finish. Anything you write there
+will be discarded.)
+
+RULES.
+- PRESERVE EVERY EXISTING LINK. This page is not only an argument, it is
+  also a directory: for many pages it is their only inbound link, and dropping
+  one strands it where nothing in the wiki points at it any more. Every wikilink
+  in the current version MUST appear in your output, spelled EXACTLY as before —
+  woven into the argument
+  where it belongs, or listed under "Also on This Theme". This is checked
+  mechanically and the compile is REJECTED if any link disappears. You may add
+  links; you may not remove them. The complete list is under "LINKS THAT MUST
+  APPEAR" below; before you finish, check every one is in your page, spelled
+  character for character (punctuation and commas included).
+- Ground every claim in the digests. If it is not in the evidence, do not assert it.
+- Do NOT invent links to pages you have not seen named in the context or the
+  current page, and never shorten a title into a new link. Both are checked
+  mechanically and REJECT the compile. Dead links are a measured problem here.
+- Do not write a page count or corpus statistic; those go stale and there is no
+  reliable number available to you.
+- Write for a smart reader who has not read the sources. British-neutral prose,
+  no marketing register, no "in today's fast-paced world".
+- LENGTH: about $LENGTH_TARGET words for the page (1,200 for a topic under 25
+  members, 2,000 under 60, 3,000 above; this one has $N_SRC). The link
+  directory under "Also on This Theme" does not count towards it.
+- Every claim cites a Note page by its EXACT title, in double-bracket link
+  syntax, from the "Note page:" lines in the context or the links in the current
+  version.
+- "Also on This Theme" is a directory: one line per link, the link and at most
+  a few words. No prose paragraphs there.
+- Think briefly: the digests are the evidence; do not deliberate at length.
+
+=== COMPILATION CONTEXT ===
+
+$CTX_TEXT
+
+=== CURRENT VERSION OF $PAGE_REL ===
+
+$CUR_TEXT
+
+=== LINKS THAT MUST APPEAR (every link in the current version) ===
+
+$CUR_LINKS
+
+=== END OF INPUTS ===
+COMPILE_SINGLE_EOF
+unset CTX_TEXT CUR_TEXT CUR_LINKS
+set +e
+"$LLM" --system "$SCRATCH/system.md" \
+  --model "${WIKI_COMPILE_MODEL:-glm-5.3-flash-background}" \
+  --effort "${WIKI_COMPILE_EFFORT:-high}" \
+  --max-tokens "${WIKI_COMPILE_MAX_TOKENS:-32000}" \
+  < "$SCRATCH/prompt.md" > "$SCRATCH/reply.md"
+RC=$?
+set -e
+if [ "$RC" -eq 4 ]; then
+  echo "wiki-compile: the reply was cut off at max_tokens; nothing written (raise WIKI_COMPILE_MAX_TOKENS)" >&2
+  exit 4
+fi
+[ "$RC" -eq 0 ] || { echo "wiki-compile: LLM failed (wiki-llm exit $RC)" >&2; exit 4; }
+# Unwrap what models put round a page -- a reasoning block, a code fence, a
+# line of preamble before the title -- and write it. An empty result writes
+# nothing, which the untouched-file check below reports as exit 6.
+# NB: single-quoted program, so no single quotes inside it.
+REPLY="$SCRATCH/reply.md" PAGE="$WT/$PAGE_REL" python3 -c '
+import os, re
+t = open(os.environ["REPLY"], encoding="utf-8", errors="replace").read()
+t = re.sub(r"^\s*<think>.*?</think>\s*", "", t, flags=re.S).strip()
+m = re.search(r"^```(?:markdown|md)?[ \t]*\n(# .*)\n```[ \t]*$", t, re.S | re.M)
+if m:
+    t = m.group(1).strip()
+h = re.search(r"^# ", t, re.M)
+if h and h.start() > 0 and not re.search(r"^#", t[:h.start()], re.M):
+    t = t[h.start():]
+if t:
+    with open(os.environ["PAGE"], "w", encoding="utf-8") as fh:
+        fh.write(t + "\n")
+'
+fi
 
 # Did the model write at all? This MUST be asked before the footer is appended,
 # because appending would itself touch the file and mask a dead model.
