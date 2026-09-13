@@ -56,6 +56,18 @@
 #      an LLM that wrote under topic/, edited topics.md, or staged anything
 #      other than exactly one new note/ page
 #
+# Single call (WIKI_INGEST_MODE=single; default agentic): a fresh topics-mode
+# article ingest makes ONE chat-completions request through wiki-llm instead of
+# an agentic CLI session. The script inlines the archive, the topics table, all
+# note/topic titles and the nearest notes (wiki-neighbours), writes summary/,
+# note/, the index.md entry and the log.md line from the reply, and then the
+# same guard, topics repair, commit and merge run. --repo, --summary-only,
+# --verbatim-only, --force and legacy mode always use the agentic path.
+# Needs WIKI_LLM_BASE_URL and a key (wiki-llm --help). WIKI_INGEST_MODEL
+# (default deepseek-4.1-flash-background), WIKI_INGEST_EFFORT (default low),
+# WIKI_INGEST_MAX_TOKENS (default 16000), WIKI_LLM (default wiki-llm beside this
+# script).
+#
 # Targets bash 3.2 (macOS /bin/bash). Runs non-interactively (launchd-safe).
 
 set -eu
@@ -67,6 +79,18 @@ if [ -z "$WIKI" ] || [ ! -d "$WIKI" ]; then
 fi
 CLI="${WIKI_INGEST_CLI:-claude}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+INGEST_MODE="${WIKI_INGEST_MODE:-agentic}"
+case "$INGEST_MODE" in
+  agentic) ;;
+  single)
+    LLM="${WIKI_LLM:-$SCRIPT_DIR/wiki-llm}"
+    if [ ! -x "$LLM" ] || [ ! -x "$SCRIPT_DIR/wiki-neighbours" ]; then
+      echo "wiki-ingest-run: WIKI_INGEST_MODE=single needs $LLM and $SCRIPT_DIR/wiki-neighbours" >&2
+      exit 64
+    fi ;;
+  *) echo "wiki-ingest-run: WIKI_INGEST_MODE must be agentic or single, not '$INGEST_MODE'" >&2; exit 64 ;;
+esac
+SINGLE_SCRATCH=""
 
 # The merge, push, and branch reaping below all assume the wiki checkout is on
 # main. If it was left on another branch, ingests would silently land there.
@@ -325,6 +349,7 @@ THROWAWAY=""
 TWT=""
 
 cleanup() {
+  [ -n "$SINGLE_SCRATCH" ] && rm -rf "$SINGLE_SCRATCH"
   git -C "$WIKI" worktree remove --force "$WT" 2>/dev/null || true
   if [ -n "$TWT" ]; then
     git -C "$WIKI" worktree remove --force "$TWT" 2>/dev/null || true
@@ -564,6 +589,256 @@ fi
 llm_failed() {
   echo "wiki-ingest-run: LLM CLI ($CLI) failed for $INGEST_URL" >&2
   exit 1
+}
+
+# --- Single call (WIKI_INGEST_MODE=single): topics-mode article ingest ---------
+# The agentic prompt's work in one request: the archive, the topics table, every
+# note/topic title and the nearest notes' précis are inlined; the reply is
+# summary.md and note.md between markers, and this script writes them plus the
+# index.md entry and the log.md line the agent used to write. The staged-path
+# guard, normalize_topics, the commit and the merge below then run unchanged.
+# Measured 2026-09-13 (wiki-model-prompt-optimise SPEC-2): 10.9 s median model
+# call on deepseek-4.1-flash at low effort; against the agentic incumbents the
+# judge preferred these notes 8-4 on twelve articles.
+single_ingest() {
+  local scratch rc
+  scratch="$(mktemp -d "${TMPDIR:-/tmp}/wiki-ingest-single-XXXXXX")"
+  SINGLE_SCRATCH="$scratch"
+  {
+    printf "The wiki's CLAUDE.md (project instructions for the wiki you are curating):\n\n"
+    if [ -f "$WT/CLAUDE.md" ]; then cat "$WT/CLAUDE.md"; else printf '(none)\n'; fi
+  } > "$scratch/system.md"
+  NOTE_TITLES=$(WT="$WT" python3 -c '
+import os, unicodedata
+wt = os.environ["WT"]
+t = set()
+for d in ("note", "topic"):
+    p = os.path.join(wt, d)
+    if os.path.isdir(p):
+        t.update(unicodedata.normalize("NFC", f[:-3]) for f in os.listdir(p) if f.endswith(".md"))
+print("\n".join(sorted(t)))
+')
+  NEIGHBOURS=$("$SCRIPT_DIR/wiki-neighbours" --wiki "$WT" --source "$WT/raw/$SLUG.md")
+  RAW_TEXT=$(cat "$WT/raw/$SLUG.md")
+  cat > "$scratch/prompt.md" <<INGEST_SINGLE_EOF
+You are curating one source into an Obsidian wiki. The source text has ALREADY
+been fetched and saved verbatim to raw/$SLUG.md (frontmatter + body); its full
+text is reproduced at the end of this message. Do NOT fetch anything.
+
+The wiki CLAUDE.md (in your system prompt) defines page format and the layout:
+raw/ = verbatim, summary/ = precis tagged with topics, note/ = one analysis
+page per source, topic/ = compiled topic pages that you never write. Follow it.
+
+Source URL: $INGEST_URL
+$EXTRA_NOTES
+STEP 0 — VERDICT (do this first): Read raw/$SLUG.md. Decide whether its body is
+the real article/content, or a login wall, paywall teaser, cookie/consent page,
+bot-check, or JavaScript app shell.
+- If it is NOT real content (BLOCKED): respond with exactly the line
+  === BLOCKED ===
+  and nothing else.
+- If it IS real content (CONTENT): continue.
+
+$TOPICS_RULE
+
+On CONTENT, produce:
+1. summary/$SLUG.md — a concise precis (frontmatter with url/title/author/dates
+   and the topics: block list described above, then 150 to 250 words in two or
+   three short paragraphs). Same slug as the raw file.
+2. note/<Title>.md — the analysis page, 700 to 1,100 words, in this order:
+   - "## The argument in one paragraph": what the source claims and why it
+     matters, stated so that it could be wrong (falsifiable), not a topic
+     sentence.
+   - "## Key quotes": at most FIVE, blockquoted, each with a line of commentary.
+     Every quote must be copied VERBATIM from raw/$SLUG.md: no paraphrase in
+     quotation marks, no tidying.
+   - "## Critical analysis": opinionated, and earned by the text: say what is
+     non-obvious, what is weak, and what the source leaves out.
+   - "## Related": the RELATE links (item 3), one bullet per link.
+   - the source footer linking [[raw/$SLUG]] and [[summary/$SLUG]].
+   No key-themes or tags list: the topics frontmatter already classifies the
+   source. Use the list of existing note/ and topic/ titles below for
+   cross-link targets. <Title> must be a title that is not already in that
+   list; if it is, pick a more specific title.
+3. RELATE — connect this source to the wiki from YOUR OWN note. Find the 2–4
+   MOST-related existing pages under note/ or topic/ (from the title list below).
+   Under "## Related", give each its own bullet: the [[wikilink]], then ONE
+   sentence that says specifically whether this source strengthens, nuances or
+   complicates that page, and how. A bullet with no such sentence is a failure.
+   Link only to titles that appear in the list, spelled exactly. The "Nearest
+   existing notes" block gives the précis of the notes most similar to this
+   source: use it to make each connection specific (what that page claims, and
+   how this source bears on it). Any title in the full list may be linked.
+
+OUTPUT — return both files in one response, delimited exactly like this, with
+nothing before the first marker and nothing after the last:
+
+=== FILE: summary.md ===
+---
+url: <exact url>
+title: "<source title>"
+author: <name, or omit the line>
+date_fetched: <copied from raw/$SLUG.md>
+date_published: <if stated, else omit the line>
+topics:
+  - <primary-slug>
+  - <secondary-slug, or omit the line>
+---
+
+<precis: a few short paragraphs>
+=== FILE: note.md ===
+# <Title>
+
+<the analysis page described in 2 and 3, ending with the footer
+*Sources: [[raw/$SLUG]], [[summary/$SLUG]]*>
+=== END ===
+
+BEFORE YOU FINISH — output checklist (do not skip this):
+- [ ] summary.md is present. This is item 1 above and the most commonly
+      dropped output. Without it the caller REJECTS the whole ingest.
+- [ ] summary.md's frontmatter has topics: — one or two slugs from the
+      table, block form, primary first.
+- [ ] Exactly ONE note: note.md, starting with "# <Title>", a title that is not
+      in the existing-title list.
+
+Guidelines:
+- No preamble: your response starts with the first === FILE marker.
+- Think briefly: the article is the evidence; do not deliberate at length.
+- Preserve the author's voice when quoting; be opinionated in analysis.
+- Keep pages phone-readable: short paragraphs, clear headers.
+- Today's date is $INGEST_DATE.
+
+---
+
+# Nearest existing notes (similarity search over note/; exact title — its one-paragraph précis)
+
+$NEIGHBOURS
+
+---
+
+# Existing note/ and topic/ page titles (one per line)
+
+$NOTE_TITLES
+
+---
+
+# raw/$SLUG.md
+
+$RAW_TEXT
+INGEST_SINGLE_EOF
+  unset NOTE_TITLES NEIGHBOURS RAW_TEXT
+  set +e
+  "$LLM" --system "$scratch/system.md" \
+    --model "${WIKI_INGEST_MODEL:-deepseek-4.1-flash-background}" \
+    --effort "${WIKI_INGEST_EFFORT:-low}" \
+    --max-tokens "${WIKI_INGEST_MAX_TOKENS:-16000}" \
+    < "$scratch/prompt.md" > "$scratch/reply.md"
+  rc=$?
+  set -e
+  if [ "$rc" -eq 4 ]; then
+    echo "wiki-ingest-run: the reply was cut off at max_tokens for $INGEST_URL; nothing written" >&2
+    exit 1
+  fi
+  [ "$rc" -eq 0 ] || llm_failed
+  # Write the files. BLOCKED removes the staged archive, which the empty-diff
+  # check below turns into exit 3, exactly as when the agent ran rm.
+  # NB: single-quoted program, so no single quotes inside it.
+  set +e
+  REPLY="$scratch/reply.md" WT="$WT" SLUG="$SLUG" URL="$INGEST_URL" DATE="$INGEST_DATE" \
+  TOPICS_TSV="$topics_tsv" python3 -c '
+import os, re, sys
+e = os.environ
+wt, slug, url, date = e["WT"], e["SLUG"], e["URL"], e["DATE"]
+def die(msg):
+    sys.stderr.write("wiki-ingest-run: single-call reply for " + url + ": " + msg + "\n")
+    sys.exit(1)
+t = open(e["REPLY"], encoding="utf-8", errors="replace").read()
+t = re.sub(r"^\s*<think>.*?</think>\s*", "", t, flags=re.S)
+if re.search(r"^=== BLOCKED ===\s*$", t, re.M) and "=== FILE:" not in t:
+    os.remove(os.path.join(wt, "raw", slug + ".md"))
+    print("BLOCKED")
+    sys.exit(0)
+ms = re.search(r"^=== FILE: summary(?:/[^=\n]*)?\.md ===[ \t]*$", t, re.M)
+mn = re.search(r"^=== FILE: note(?:/[^=\n]*)?\.md ===[ \t]*$", t, re.M)
+me = re.search(r"^=== END ===[ \t]*$", t, re.M)
+if not (ms and mn and ms.start() < mn.start()):
+    die("no === FILE: summary.md === and === FILE: note.md === markers")
+summary = t[ms.end():mn.start()].strip("\n").strip() + "\n"
+end = me.start() if me and me.start() > mn.start() else len(t)
+note = re.sub(r"\n```\s*$", "", t[mn.end():end].strip("\n")).strip() + "\n"
+h = re.search(r"^#[ \t]+(.+?)[ \t]*$", note, re.M)
+if not summary.strip() or not h:
+    die("empty summary, or a note with no # title")
+# A title is a filename and a link target: keep it to what both allow.
+title = re.sub(r"\s*:\s*", " — ", h.group(1))
+title = re.sub(r"[\\/*?\"<>|#^\[\]]", "-", title)
+title = re.sub(r"\s+", " ", title).strip(" .-")
+if not title:
+    die("the note title is empty once made filename-safe")
+note = note[:h.start()] + "# " + title + note[h.end():]
+for d in ("note", "topic"):
+    if os.path.exists(os.path.join(wt, d, title + ".md")):
+        die(d + "/" + title + ".md already exists; a new source needs a new note")
+os.makedirs(os.path.join(wt, "summary"), exist_ok=True)
+os.makedirs(os.path.join(wt, "note"), exist_ok=True)
+open(os.path.join(wt, "summary", slug + ".md"), "w", encoding="utf-8").write(summary)
+open(os.path.join(wt, "note", title + ".md"), "w", encoding="utf-8").write(note)
+# Frontmatter facts for the index and log lines.
+fm = ""
+if summary.startswith("---\n") and "\n---\n" in summary[4:]:
+    fm, body = summary[4:].split("\n---\n", 1)
+else:
+    body = summary
+def field(k):
+    m = re.search(r"^" + k + r":[ \t]*(.*)$", fm, re.M)
+    v = m.group(1).strip() if m else ""
+    return v[1:-1] if len(v) > 1 and v[0] == v[-1] and v[0] in "\"" else v
+tm = re.search(r"^topics:[ \t]*\n((?:[ \t]+-[ \t]+.*\n?)+)", fm, re.M)
+primary = re.findall(r"-[ \t]+(\S+)", tm.group(1))[0] if tm else ""
+titles = dict(l.split("\t")[:2] for l in e["TOPICS_TSV"].splitlines() if l.count("\t") >= 2)
+section = titles.get(primary) or titles.get("misc") or "Miscellany"
+def sentences(text, n, cap):
+    para = next((p for p in re.split(r"\n\s*\n", text) if p.strip() and not p.strip().startswith(("#", ">", "---"))), "")
+    para = " ".join(para.split())
+    s = " ".join(re.split(r"(?<=[.!?])\s+", para)[:n])
+    return s if len(s) <= cap else s[:cap].rsplit(" ", 1)[0] + "…"
+note_body = note[h.start():].split("\n", 1)[1] if "\n" in note[h.start():] else ""
+entry = "- [[%s]] — %s" % (title, sentences(note_body, 1, 220) or sentences(body, 1, 220))
+ip = os.path.join(wt, "index.md")
+idx = open(ip, encoding="utf-8").read() if os.path.exists(ip) else "# Wiki Index\n"
+lines = idx.rstrip("\n").split("\n")
+at = next((i for i, l in enumerate(lines) if l.strip() == "## " + section), None)
+if at is None:
+    lines += ["", "## " + section, "", entry]
+else:
+    j = at + 1
+    while j < len(lines) and not lines[j].startswith("## "):
+        j += 1
+    k = j
+    while k > at + 1 and not lines[k - 1].strip():
+        k -= 1
+    lines[k:k] = [entry] if k > at + 1 else ["", entry]
+open(ip, "w", encoding="utf-8").write("\n".join(lines) + "\n")
+related = []
+for x in re.findall(r"\[\[([^\]\[]+?)\]\]", note):
+    x = x.split("|")[0].split("#")[0].strip()
+    if not x.startswith(("raw/", "summary/")) and x not in related:
+        related.append(x)
+host = re.sub(r"^www\.", "", re.sub(r"^[a-z]+://", "", url).split("/")[0])
+logline = "- %s: Ingested [%s](%s) (%s, %s, %s) — %s → raw/%s.md, [[%s]]. Cross-links: %s." % (
+    date, field("title") or title, url, field("author") or "author not stated", host,
+    field("date_published") or "publication date not stated", sentences(body, 3, 600), slug, title,
+    ", ".join("[[" + r + "]]" for r in related[:4]) or "none")
+lp = os.path.join(wt, "log.md")
+log = open(lp, encoding="utf-8").read() if os.path.exists(lp) else ""
+if log and not log.endswith("\n"):
+    log += "\n"
+open(lp, "w", encoding="utf-8").write(log + logline + "\n")
+print("WROTE note/" + title + ".md")
+'
+  rc=$?
+  set -e
+  [ "$rc" -eq 0 ] || exit 1
 }
 
 # $CLI MUST run with the worktree as CWD: with the caller's CWD it picks up
@@ -884,6 +1159,8 @@ Guidelines:
 - Keep pages phone-readable: short paragraphs, clear headers
 - Today's date is $INGEST_DATE
 INGEST_EOF
+elif [ "$TOPICS_MODE" -eq 1 ] && [ "$INGEST_MODE" = single ] && [ "$FORCE" -eq 0 ]; then
+  single_ingest
 elif [ "$TOPICS_MODE" -eq 1 ]; then
   cat <<INGEST_EOF | (cd "$WT" && "$CLI" -p --allowedTools "Read,Write,Edit,Bash" --add-dir "$WT") || llm_failed
 You are curating one source into an Obsidian wiki. The source text has ALREADY
