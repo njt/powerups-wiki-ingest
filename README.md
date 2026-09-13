@@ -106,6 +106,12 @@ Set these in your Claude Code environment (e.g. `~/.claude/settings.json` under 
 |----------|----------|---------|---------|
 | `WIKI_PATH` | yes | — | absolute path to your Obsidian wiki directory |
 | `WIKI_INGEST_CLI` | no | `claude` | the LLM CLI used for analysis and writing |
+| `WIKI_INGEST_MODE` | no | `agentic` | `single`: a fresh topics-mode article ingest is ONE chat-completions call via `wiki-llm` (the script writes summary, note, index and log); `--repo`, `--summary-only`, `--force` stay agentic |
+| `WIKI_COMPILE_MODE` | no | `agentic` | `single`: `wiki-compile` inlines the context, the current page and its links in ONE call via `wiki-llm`; same gates |
+| `WIKI_LLM_BASE_URL` | for `single` | — | OpenAI-compatible endpoint, e.g. `https://gw.lunaroute.com/v1` |
+| `WIKI_LLM_API_KEY` or `WIKI_LLM_KEY_FILE` + `WIKI_LLM_KEY_PATH` | for `single` | — | the key, or a JSON file and a dotted path into it |
+| `WIKI_INGEST_MODEL` / `WIKI_INGEST_EFFORT` / `WIKI_INGEST_MAX_TOKENS` | no | `deepseek-4.1-flash-background` / `low` / `16000` | single-call ingest settings |
+| `WIKI_COMPILE_MODEL` / `WIKI_COMPILE_EFFORT` / `WIKI_COMPILE_MAX_TOKENS` | no | `glm-5.3-flash-background` / `high` / `32000` | single-call compile settings (`max_tokens` includes reasoning) |
 
 First time? Create the wiki with one command:
 
