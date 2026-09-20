@@ -374,13 +374,22 @@ trap cleanup EXIT
 
 # Merge $BRANCH into the checkout at $1, retrying up to 5 times. Parallel
 # ingests contend on index.lock — abort, sleep, retry handles that.
+# Abort only a merge that is OURS. `git merge` also fails before it starts, when
+# a peer ingest is mid-merge in the same checkout; an abort then resets the
+# PEER's merge. The peer's commit still lands, the working tree is left behind
+# it, and the next ingest auto-commits the peer's files as deletions — a whole
+# ingest lost after it exited 0 (2026-09-20). Skipping the abort just waits the
+# peer out.
 merge_with_retry() {
-  local dir="$1" attempt=1
+  local dir="$1" attempt=1 ours
+  ours=$(git -C "$dir" rev-parse -q --verify "$BRANCH^{commit}" 2>/dev/null || true)
   while [ "$attempt" -le 5 ]; do
     if git -C "$dir" merge "$BRANCH" --no-edit; then
       return 0
     fi
-    git -C "$dir" merge --abort 2>/dev/null || true
+    if [ -n "$ours" ] && [ "$(git -C "$dir" rev-parse -q --verify MERGE_HEAD 2>/dev/null)" = "$ours" ]; then
+      git -C "$dir" merge --abort 2>/dev/null || true
+    fi
     sleep 3
     attempt=$((attempt + 1))
   done

@@ -512,6 +512,48 @@ done
 git -C "$WIKI_PATH" show "main:topic/Setext Page.md" | grep -q '^=======$' \
   || { echo "FAIL: auto-commit — the setext page never reached main"; fail=1; }
 
+# --- case 14b: a failed merge never aborts a PEER's merge ---------------------
+# The in-progress guard runs before the auto-commit, so a peer ingest can start
+# its merge in the gap between that guard and our own `git merge`. Ours then
+# fails before it starts, and an unconditional `git merge --abort` resets the
+# peer's merge instead: the peer's commit still lands, the working tree is left
+# behind it, and the next ingest auto-commits the peer's files as deletions
+# (2026-09-20: a whole ingest lost, and it had exited 0). A one-shot post-commit
+# hook opens that gap deterministically: it fires on the auto-commit and leaves a
+# peer merge in progress. Hooks are shared with the ingest worktree, hence the
+# subject test.
+git -C "$WIKI_PATH" checkout -q -b peer-ingest
+printf 'peer body\n' > "$WIKI_PATH/topic/Peer Page.md"
+git -C "$WIKI_PATH" add -A
+git -C "$WIKI_PATH" commit -q -m "peer ingest"
+git -C "$WIKI_PATH" checkout -q main
+PEER_SHA=$(git -C "$WIKI_PATH" rev-parse peer-ingest)
+HOOK="$(gitdir_of_wiki)/hooks/post-commit"
+mkdir -p "$(dirname "$HOOK")"
+cat > "$HOOK" <<HOOK_EOF
+#!/bin/sh
+[ -e "$SANDBOX/peer-flag" ] || exit 0
+[ "\$(git log -1 --format=%s)" = "Auto-commit local changes before ingest merge" ] || exit 0
+rm -f "$SANDBOX/peer-flag"
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE
+git -C "$WIKI_PATH" merge --no-commit --no-ff peer-ingest >/dev/null 2>&1
+exit 0
+HOOK_EOF
+chmod +x "$HOOK"
+: > "$SANDBOX/peer-flag"
+printf '# Context Graphs\n\nOUR VERSION, edited again\n' > "$WIKI_PATH/topic/Context Graphs.md"
+STUB_MODE=good-slug STUB_SLUG=case-fourteen-b \
+  "$BIN/wiki-ingest-run" --content "$SRC" https://example.invalid/case-fourteen-b >/dev/null 2>"$SANDBOX/e14b"
+check "a peer's merge in the gap fails ours, loudly" 1 $?
+[ ! -e "$SANDBOX/peer-flag" ] \
+  || { echo "FAIL: peer-merge — the hook never fired, so the case tested nothing"; fail=1; }
+[ "$(git -C "$WIKI_PATH" rev-parse -q --verify MERGE_HEAD)" = "$PEER_SHA" ] \
+  || { echo "FAIL: peer-merge — the peer's MERGE_HEAD did not survive, stderr: $(cat "$SANDBOX/e14b")"; fail=1; }
+[ -e "$WIKI_PATH/topic/Peer Page.md" ] \
+  || { echo "FAIL: peer-merge — the peer's merged file was reset out of the working tree"; fail=1; }
+rm -f "$HOOK"
+git -C "$WIKI_PATH" merge --abort 2>/dev/null || true
+
 # --- case 15: wiki-ingest-backfill refuses the same states (AC6) --------------
 # backfill does not share wiki-ingest-run's code — it has its own commit_batch,
 # whose narrower `git add raw/` still stages a marker-laden raw/ file and marks
