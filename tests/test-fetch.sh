@@ -68,7 +68,7 @@ printf 'So the thing about computers is that they are, in fact, bad, and here is
 STUB
 chmod +x "$TMP/stub-ytx/ytx"
 
-for url in "https://www.youtube.com/watch?v=abc123" "https://youtu.be/abc123"; do
+for url in "https://www.youtube.com/watch?v=abc123" "https://youtu.be/abc123" "https://music.youtube.com/watch?v=abc123" "https://m.youtube.com/watch?v=abc123"; do
   rm -f "$TMP/ytx-argv"
   out=$(PATH="$TMP/stub-ytx:$PATH" YTX_ARGV_FILE="$TMP/ytx-argv" "$FETCH" "$url" 2>/dev/null); rc=$?
   [ "$rc" = 0 ] || { echo "FAIL: ytx: $url exited $rc with the stub on PATH"; fail=1; }
@@ -100,6 +100,27 @@ fi
 err=$(WIKI_INGEST_YTX=/nonexistent/ytx "$FETCH" "https://youtu.be/abc123" 2>&1 >/dev/null); rc=$?
 [ "$rc" = 1 ] || { echo "FAIL: ytx-override: expected rc 1 for an unresolvable WIKI_INGEST_YTX, got $rc"; fail=1; }
 printf '%s' "$err" | grep -q WIKI_INGEST_YTX || { echo "FAIL: ytx-override: stderr does not name WIKI_INGEST_YTX: $err"; fail=1; }
+
+# ytx failing: exit 3, and the failure line carries ytx's own stderr so the
+# orchestrator can record WHY in ingest-queue.md, not just a return code.
+mkdir -p "$TMP/stub-ytx-fail"
+cat > "$TMP/stub-ytx-fail/ytx" <<'STUB'
+#!/bin/bash
+echo "error: no audio stream found for this video" >&2
+exit 2
+STUB
+chmod +x "$TMP/stub-ytx-fail/ytx"
+err=$(PATH="$TMP/stub-ytx-fail:$PATH" "$FETCH" "https://www.youtube.com/watch?v=abc123" 2>&1 >"$TMP/ytx-fail-out"); rc=$?
+[ "$rc" = 3 ] || { echo "FAIL: ytx-fail: expected rc 3 when ytx exits non-zero, got $rc"; fail=1; }
+[ ! -s "$TMP/ytx-fail-out" ] || { echo "FAIL: ytx-fail: stdout was not empty"; fail=1; }
+printf '%s' "$err" | grep -q "rc=2" || { echo "FAIL: ytx-fail: stderr does not name ytx's rc: $err"; fail=1; }
+printf '%s' "$err" | grep -q "no audio stream" || { echo "FAIL: ytx-fail: ytx's own stderr was dropped: $err"; fail=1; }
+
+# A host that merely contains the string must NOT route to ytx (ytx's own
+# substring matcher would; ours is deliberately stricter).
+rm -f "$TMP/ytx-argv"
+PATH="$TMP/stub-ytx:$PATH" YTX_ARGV_FILE="$TMP/ytx-argv" "$FETCH" "http://127.0.0.1:1/youtube.com/x" >/dev/null 2>&1; rc=$?
+[ ! -e "$TMP/ytx-argv" ] || { echo "FAIL: lookalike: ytx was invoked for a non-YouTube host with youtube.com/ in its path"; fail=1; }
 
 # A non-YouTube URL must not touch ytx even when it is on PATH. 127.0.0.1:1 is
 # refused immediately, so curl fails fast with no network.

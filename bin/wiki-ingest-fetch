@@ -37,15 +37,17 @@ case "${1:-}" in
   * ) SRC="$1" ;;
 esac
 
-# is_youtube_url <url> — host (after scheme and www./m.) is youtube.com or
-# youtu.be. Same intent as ytx's own matcher (cmd/ytx/main.go isYouTubeURL:
-# contains "youtube.com/" or "youtu.be/"). bin/wiki-ingest-run carries a copy
-# of this helper for its title-slug rule; the two must agree.
+# is_youtube_url <url> — host is youtube.com, any *.youtube.com (www., m.,
+# music.), or youtu.be. Deliberately stricter than ytx's own matcher
+# (cmd/ytx/main.go isYouTubeURL: substring "youtube.com/" or "youtu.be/"),
+# which would also match unrelated hosts with those strings in a path.
+# bin/wiki-ingest-run carries a copy of this helper for its title-slug rule;
+# the two must agree.
 is_youtube_url() {
   local u="$1"
-  u="${u#http://}"; u="${u#https://}"; u="${u#www.}"; u="${u#m.}"
+  u="${u#http://}"; u="${u#https://}"
   case "$u" in
-    youtube.com/*|youtu.be/*) return 0 ;;
+    youtube.com/*|*.youtube.com/*|youtu.be/*) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -75,11 +77,18 @@ elif is_youtube_url "$SRC"; then
   elif ! command -v "$YTX" >/dev/null 2>&1; then
     echo "wiki-ingest-fetch: WIKI_INGEST_YTX='$YTX' is not executable" >&2; exit 1
   fi
-  out=$("$YTX" -no-gist -no-summary "$SRC" 2>/dev/null); yrc=$?
+  # ytx's stderr is kept: on failure it is the only thing that says WHY (no
+  # audio, AssemblyAI error, missing key), and the orchestrator records that
+  # reason in ingest-queue.md.
+  yerr=$(mktemp "${TMPDIR:-/tmp}/wiki-ingest-ytx.XXXXXX")
+  out=$("$YTX" -no-gist -no-summary "$SRC" 2>"$yerr"); yrc=$?
   if [ "$yrc" -ne 0 ]; then
-    echo "wiki-ingest-fetch: ytx failed (rc=$yrc) for $SRC — nothing to extract" >&2
+    reason=$(tail -n 3 "$yerr" | tr '\n' ' ')
+    rm -f "$yerr"
+    echo "wiki-ingest-fetch: ytx failed (rc=$yrc) for $SRC — nothing to extract${reason:+: $reason}" >&2
     exit 3
   fi
+  rm -f "$yerr"
 else
   if ! command -v curl >/dev/null 2>&1; then
     echo "wiki-ingest-fetch: curl not found" >&2; exit 1

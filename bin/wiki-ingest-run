@@ -135,15 +135,15 @@ url_slug() {
   printf '%s' "$seg"
 }
 
-# is_youtube_url <url> — host (after scheme and www./m.) is youtube.com or
-# youtu.be. A copy of the helper in bin/wiki-ingest-fetch, which routes these
+# is_youtube_url <url> — host is youtube.com, any *.youtube.com, or youtu.be.
+# A copy of the helper in bin/wiki-ingest-fetch, which routes these
 # URLs through ytx; the two MUST agree, or a URL could be fetched as a
 # transcript but slugged as "watch" (or the reverse).
 is_youtube_url() {
   local u="$1"
-  u="${u#http://}"; u="${u#https://}"; u="${u#www.}"; u="${u#m.}"
+  u="${u#http://}"; u="${u#https://}"
   case "$u" in
-    youtube.com/*|youtu.be/*) return 0 ;;
+    youtube.com/*|*.youtube.com/*|youtu.be/*) return 0 ;;
     *) return 1 ;;
   esac
 }
