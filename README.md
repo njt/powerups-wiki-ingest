@@ -7,6 +7,7 @@ A [Claude Code](https://claude.ai/code) plugin: feed it a URL or GitHub repo, an
 - **Regular web pages** — fetches content, archives it verbatim, writes a precis and an analysis page (quotes, themes, opinionated take), updates the index and log.
 - **GitHub repos** — shallow-clones the repo and does a deep architectural read (5–10 source files) before writing.
 - **JS-heavy / bot-protected pages** — the fetch step is `curl` piped into `trafilatura` (readability extraction, no browser), so pages that only render client-side come back empty; there's an optional browser fallback via the [`surf`](https://github.com/nat/surf) CLI for those.
+- **YouTube videos** — fetched as a transcript via [`ytx`](https://github.com/gnat/ytx) when it is installed (`go install github.com/gnat/ytx/cmd/ytx@latest`; `WIKI_INGEST_YTX` overrides the path), and archived under a slug derived from the video title rather than the URL. Without `ytx` a YouTube URL exits 3 — the surf fallback does not apply, since a browser grab of YouTube never yields the transcript.
 
 Each ingest runs in an isolated git worktree and writes only files it uniquely owns, so many URLs process in parallel without contending. `index.md` and `log.md` carry `merge=union`; nothing else is shared, because cross-page curation is a separate step (below) rather than something each ingest does on its way past.
 

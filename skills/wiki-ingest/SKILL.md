@@ -55,6 +55,10 @@ did not inherit the export — re-run this block at the top of that same call.
   `--add-dir`), so leave this as `claude` or point it at a wrapper.
 - `trafilatura` must be installed (`pipx install trafilatura`) — the fetch step
   is `curl | trafilatura` (readability extraction, no browser).
+- `ytx` (optional, `go install github.com/gnat/ytx/cmd/ytx@latest`) — YouTube
+  URLs are fetched through it inside the same fetch step, as a markdown
+  transcript headed by the video title. `WIKI_INGEST_YTX` overrides the binary
+  path. Without it a YouTube URL exits 3 (see below).
 
 Sanity check before first run:
 
@@ -65,9 +69,11 @@ command -v wiki-ingest-run wiki-ingest-dupcheck wiki-ingest-setup trafilatura "$
 ## The scripts (call these, don't reimplement)
 
 - `wiki-ingest-run [options] <url>` — the whole ingest: reaps stale branches,
-  dup-checks, worktree, fetch + extract (`curl` into `trafilatura`, staged
-  verbatim to `raw/<slug>.md`), LLM analysis, commit, merge (retry), best-effort
-  push, cleanup. The LLM never fetches — it only reads the staged archive.
+  dup-checks, worktree, fetch + extract (`curl` into `trafilatura`; YouTube via
+  `ytx`; staged verbatim to `raw/<slug>.md`), LLM analysis, commit, merge
+  (retry), best-effort push, cleanup. The LLM never fetches — it only reads the
+  staged archive. YouTube archives are slugged from the video title, not the
+  URL (whose last segment is always `watch`).
 - `wiki-ingest-dupcheck <url>` — deterministic duplicate check. Exit 0 =
   duplicate (prints raw file, title, date); exit 1 = clean.
 - `wiki-ingest-setup [--gitdir <path>]` — one-time: bootstrap a new wiki at
@@ -94,7 +100,12 @@ create a topic page. If the user wants a new topic, that is an edit to
 - **0** ingested (or dry-run OK, or summary backfilled)
 - **2** duplicate — already ingested (skipped); use `--force` to re-ingest
 - **3** no changes — extraction returned nothing usable (login wall / bot
-  check / JS shell); retry with the surf fallback below
+  check / JS shell); retry with the surf fallback below. **Exception: a
+  YouTube URL.** There exit 3 means `ytx` is not installed or failed (stderr
+  says which). Do NOT retry it with surf — a browser grab of YouTube yields
+  only the page description, never the transcript. Record the URL in
+  `ingest-queue.md` at the wiki root with the reason (`ytx not installed`, or
+  the ytx error) and move on.
 - **64** usage error
 - anything else — read stderr
 
@@ -132,6 +143,10 @@ wiki-ingest-dupcheck "<url>"    # rc 0 = dup (prints detail), rc 1 = clean
   (or only a trailing slash): use `wiki-ingest-run --repo <url>` (shallow-clones
   the repo for deep architectural analysis). URLs like `.../blob/...` or
   `.../tree/...` are NOT repos — treat as regular URLs.
+- **YouTube** (`youtube.com/watch?v=...`, `youtu.be/...`): plain
+  `wiki-ingest-run <url>` — the fetch step hands it to `ytx` itself. No surf,
+  no manual transcript work, no `--content`. Pass the direct YouTube URL, not
+  a redirect wrapper (see the Bluesky note below).
 - **Everything else**: `wiki-ingest-run <url>`.
 
 Use a 600-second timeout on every `wiki-ingest-run` call.
@@ -161,7 +176,8 @@ a shared wait/merge loop — that path has burned the upstream plugin before (ba
 3.2 compat, PID tracking, orphaned processes).
 
 After the batch finishes, collect the exit-3 URLs (nothing extractable) and
-retry those with surf (below).
+retry those with surf (below) — except YouTube URLs, which go straight to
+`ingest-queue.md` with the ytx reason from stderr.
 
 ### Optional: browser fallback for unfetchable URLs (requires the surf CLI)
 
@@ -234,8 +250,9 @@ wiki-ingest-run --content "$GRAB_DIR/url-slug.txt" "<FAILED_URL>"
   `surf tab new --args-json '{"url":"about:blank"}'`.
 - The `navigate` command requires `--url` (not positional):
   `surf navigate --url "https://..." --tab-id <id>`.
-- YouTube URLs via Bluesky redirects: decode the redirect URL and use the
-  direct `youtu.be` link.
+- YouTube URLs wrapped in a Bluesky redirect: decode the redirect and pass the
+  direct `youtube.com` / `youtu.be` URL to `wiki-ingest-run` (Step 3). It is
+  not a surf job — the fetch step handles YouTube via `ytx`.
 
 ## Report
 
