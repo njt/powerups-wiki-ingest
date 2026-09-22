@@ -2,11 +2,16 @@
 # wiki-ingest-run [options] <url> — ingest a URL into the Obsidian wiki via an LLM CLI.
 #
 # Each ingest runs in a git worktree in /tmp. The script fetches and stages the
-# verbatim raw/ file itself (curl + trafilatura, no LLM); the LLM CLI reads that
-# archive and writes summary/, the analysis page, index and log; the script then
-# commits to a branch and merges back to main. The merge=union gitattribute on
-# index.md and log.md prevents merge conflicts, so parallel ingests are safe by
-# design.
+# verbatim raw/ file itself (curl + trafilatura, no LLM; YouTube via ytx — see
+# wiki-ingest-fetch); the LLM CLI reads that archive and writes summary/, the
+# analysis page, index and log; the script then commits to a branch and merges
+# back to main. The merge=union gitattribute on index.md and log.md prevents
+# merge conflicts, so parallel ingests are safe by design.
+#
+# The archive slug comes from the URL (url_slug), except for YouTube, where the
+# URL's last segment is the constant "watch": there the slug comes from the
+# fetched transcript's title line, so the fetch happens before the slug is
+# resolved. A URL an archive already holds keeps that archive's slug regardless.
 #
 # Two modes, chosen by whether topics.md exists in the wiki (the gate is the
 # file, not a flag, because the hourly job runs this script from the working
@@ -110,6 +115,11 @@ usage() {
 # Deterministic slug from a URL: last meaningful path segment, lowercased,
 # non-alphanumerics → hyphens; fall back to the host. Same input → same slug,
 # so raw/<slug>.md and summary/<slug>.md always agree.
+#
+# YouTube is the one exception: youtube.com/watch?v=ID has the constant last
+# segment "watch", so resolve_slug is handed title_slug of the fetched
+# transcript instead (see is_youtube_url / title_slug below). Kata 4gpv is the
+# general form of the query-string problem; this does not attempt it.
 url_slug() {
   local u="$1" seg host
   u="${u%%\?*}"; u="${u%%#*}"; u="${u#http://}"; u="${u#https://}"; u="${u#www.}"
@@ -123,6 +133,40 @@ url_slug() {
   seg="${seg##-}"; seg="${seg%%-}"
   [ -n "$seg" ] || seg="source"
   printf '%s' "$seg"
+}
+
+# is_youtube_url <url> — host (after scheme and www./m.) is youtube.com or
+# youtu.be. A copy of the helper in bin/wiki-ingest-fetch, which routes these
+# URLs through ytx; the two MUST agree, or a URL could be fetched as a
+# transcript but slugged as "watch" (or the reverse).
+is_youtube_url() {
+  local u="$1"
+  u="${u#http://}"; u="${u#https://}"; u="${u#www.}"; u="${u#m.}"
+  case "$u" in
+    youtube.com/*|youtu.be/*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# title_slug <body> — slug of the body's first "# " heading line, or the empty
+# string when there is none. Same rules as url_slug (lowercase, non-
+# alphanumerics → hyphens, trimmed), with hyphen runs squeezed and an 80-char
+# cap that cuts back to the last hyphen if that leaves more than 40 chars —
+# mirroring ytx's Slugify (internal/publish/publish.go) so an archive's slug
+# matches the name ytx itself would have given the transcript.
+title_slug() {
+  local t s cut
+  t=$(printf '%s\n' "$1" | sed -n 's/^# //p' | head -1)
+  [ -n "$t" ] || return 0
+  s=$(printf '%s' "$t" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9' '-')
+  s="${s##-}"; s="${s%%-}"
+  if [ ${#s} -gt 80 ]; then
+    s="${s:0:80}"
+    cut="${s%-*}"
+    if [ ${#cut} -gt 40 ]; then s="$cut"; fi
+    s="${s%%-}"
+  fi
+  printf '%s' "$s"
 }
 
 # THE SUFFIX SCHEME LIVES HERE AND NOWHERE ELSE.
@@ -187,12 +231,16 @@ owning_slug() {
   return 2
 }
 
-# resolve_slug <worktree> <url> — the slug this URL should be archived under.
+# resolve_slug <worktree> <url> [base] — the slug this URL should be archived
+# under. The optional third argument replaces url_slug as the base candidate
+# (YouTube hands in title_slug of the transcript); empty means url_slug.
 #
 # Step 1: if an archive already holds this URL, that IS its slug. This is the
 # --force re-ingest path and it must update in place; suffixing here would turn
 # every re-ingest into a duplicate, which is worse than the collision being
-# fixed. It also finds hand-chosen slugs no rule would generate.
+# fixed. It also finds hand-chosen slugs no rule would generate — which is why
+# it runs before, and regardless of, any base override: a re-ingest of a
+# hand-renamed YouTube archive keeps the hand-chosen name, not the title's.
 #
 # Step 2: otherwise this is a genuinely different source that happens to share a
 # last path segment. Walk a bounded ladder and take the first candidate no
@@ -203,14 +251,14 @@ owning_slug() {
 # Exhausting the ladder is exit 1 with the candidates named — never a silent
 # overwrite. (Exit codes 2 and 3 are reserved contract values.)
 resolve_slug() {
-  local wt="$1" url="$2" own orc base tok cand i tried
+  local wt="$1" url="$2" base="${3:-}" own orc tok cand i tried
   set +e; own=$(owning_slug "$wt" "$url"); orc=$?; set -e
   case "$orc" in
     0) printf '%s' "$own"; return 0 ;;
     2) return 1 ;;  # message already printed
   esac
 
-  base=$(url_slug "$url")
+  [ -n "$base" ] || base=$(url_slug "$url")
   tok=$(slug_disambiguator "$url")
   cand="$base"
   tried=""
@@ -451,11 +499,10 @@ SLUG=""
 if [ "$SUMMARY_ONLY" -eq 1 ]; then
   SLUG="$SUMMARY_SLUG"
 elif [ "$DRY_RUN" -ne 1 ]; then
-  # Resolved against the WORKTREE, which is a fresh checkout of main, and before
-  # anything is written into it: an unrelated source sharing this URL's last
-  # path segment must not have its raw/ and summary/ silently overwritten.
-  set +e; SLUG=$(resolve_slug "$WT" "$INGEST_URL"); rrc=$?; set -e
-  [ "$rrc" -eq 0 ] || exit 1
+  # The body is fetched BEFORE the slug is resolved: for YouTube the slug comes
+  # from the transcript's title line, which only exists once ytx has run. None
+  # of the three branches below write into the worktree, so the slug is still
+  # resolved against a fresh checkout of main with nothing staged in it.
   FETCH="$SCRIPT_DIR/wiki-ingest-fetch"
   if [ ! -x "$FETCH" ]; then
     echo "wiki-ingest-run: $FETCH missing or not executable" >&2
@@ -502,6 +549,19 @@ elif [ "$DRY_RUN" -ne 1 ]; then
     echo "NO CONTENT — fetch/extract empty for $INGEST_URL"
     exit 3
   fi
+
+  # Resolved against the WORKTREE, which is a fresh checkout of main, and before
+  # anything is written into it: an unrelated source sharing this URL's last
+  # path segment must not have its raw/ and summary/ silently overwritten.
+  # YouTube's last segment is the constant "watch", so its base candidate is the
+  # transcript title instead (also for --content when the file starts with a
+  # "# Title" line); an empty title falls back to url_slug as for any other URL.
+  slug_base=""
+  if is_youtube_url "$INGEST_URL"; then
+    slug_base=$(title_slug "$body")
+  fi
+  set +e; SLUG=$(resolve_slug "$WT" "$INGEST_URL" "$slug_base"); rrc=$?; set -e
+  [ "$rrc" -eq 0 ] || exit 1
 
   # Write the verbatim archive: minimal frontmatter (url is what dup-check needs)
   # + the exact extracted body. The LLM must NOT rewrite this file.
