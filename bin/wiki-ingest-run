@@ -527,19 +527,22 @@ elif [ "$DRY_RUN" -ne 1 ]; then
       # set +e around the substitution: the helper exits 3 on empty extraction;
       # under set -e a bare assignment would abort here. Capture the code so we
       # can tell "empty page" (3) from a real helper error (1) below.
-      set +e; body=$("$FETCH" --file "$CONTENT_FILE" 2>/dev/null); frc=$?; set -e
+      set +e; body=$("$FETCH" --file "$CONTENT_FILE"); frc=$?; set -e
     else
       body=$(cat "$CONTENT_FILE")
     fi
   else
-    set +e; body=$("$FETCH" "$INGEST_URL" 2>/dev/null); frc=$?; set -e
+    set +e; body=$("$FETCH" "$INGEST_URL"); frc=$?; set -e
   fi
 
   # Helper exit 1 is a real error (e.g. trafilatura not installed) — fail loudly
   # rather than masquerading as "no content" and silently routing every URL to
   # surf. Exit 3 (empty) and 0 (content) both fall through to the length check.
+  # The helper's stderr is left alone on purpose: it carries the one line that
+  # says WHY (ytx missing, ytx failed, an override that does not resolve); the
+  # helper already silences curl's and trafilatura's own noise.
   if [ "${frc:-0}" -eq 1 ]; then
-    echo "wiki-ingest-run: fetch helper error (is trafilatura installed?) for $INGEST_URL" >&2
+    echo "wiki-ingest-run: fetch helper error for $INGEST_URL (see the wiki-ingest-fetch line above)" >&2
     exit 1
   fi
 

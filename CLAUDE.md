@@ -25,7 +25,7 @@ A Claude Code plugin that ingests URLs into an Obsidian wiki.
 
 ## Testing
 
-Both test scripts are runnable with no network and no real LLM. **`test-guard.sh` seeds the throwaway wiki with a pre-existing `summary/` and `topic/` page on purpose** — the completeness guard's original bug was that it globbed the whole worktree, which only looks wrong on a *populated* wiki. Remove the seed and the test silently stops testing anything.
+Every test script is runnable with no network and no real LLM. **`test-guard.sh` seeds the throwaway wiki with a pre-existing `summary/` and `topic/` page on purpose** — the completeness guard's original bug was that it globbed the whole worktree, which only looks wrong on a *populated* wiki. Remove the seed and the test silently stops testing anything.
 
 Never point `WIKI_PATH` at a real wiki when testing.
 
