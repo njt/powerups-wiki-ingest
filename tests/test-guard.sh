@@ -825,6 +825,73 @@ grep -q "held by 2 archives" "$SANDBOX/ecf2" \
   || { echo "FAIL: collision F — raw/split-one.md was rewritten"; fail=1; }
 
 # =============================================================================
+# YouTube slug cases (kata 9qeh)
+#
+# url_slug takes the URL's last path segment, which for youtube.com/watch?v=ID
+# is the constant "watch" — every YouTube ingest landed on raw/watch.md. For
+# YouTube the slug comes from the fetched transcript's "# <title>" line, which
+# means the fetch has to run before the slug is resolved. --content stands in
+# for the fetch here: the file has the exact shape ytx prints (per its
+# internal/publish/publish.go FormatTranscript), so no ytx is needed and none
+# is run. STUB_MODE=autoslug reads the slug back out of the prompt, which is
+# how these cases observe the name the script actually chose.
+# =============================================================================
+
+YT_TRANSCRIPT="$SANDBOX/yt-transcript.txt"
+printf '# Computers are bad, actually | Kyle Kingsbury, Jepsen\n\n' > "$YT_TRANSCRIPT"
+printf -- '- **Channel:** Jepsen\n- **URL:** https://www.youtube.com/watch?v=abc123\n- **Duration:** 41m\n- **Transcribed:** 2026-09-22\n\n---\n\n' >> "$YT_TRANSCRIPT"
+printf 'So the thing about computers is that they are, in fact, bad, and here is why.\n' >> "$YT_TRANSCRIPT"
+
+# --- youtube case A: a fresh YouTube ingest is slugged from the title --------
+STUB_MODE=autoslug TOPIC_TITLE="Computers Are Bad" \
+  "$BIN/wiki-ingest-run" --content "$YT_TRANSCRIPT" "https://www.youtube.com/watch?v=abc123" \
+  >/dev/null 2>"$SANDBOX/eya"
+check "youtube: fresh ingest slugs from the transcript title" 0 $?
+git -C "$WIKI_PATH" cat-file -e "main:raw/computers-are-bad-actually-kyle-kingsbury-jepsen.md" 2>/dev/null \
+  || { echo "FAIL: youtube A — raw/computers-are-bad-actually-kyle-kingsbury-jepsen.md is not on main, stderr: $(cat "$SANDBOX/eya")"; fail=1; }
+git -C "$WIKI_PATH" cat-file -e "main:raw/watch.md" 2>/dev/null \
+  && { echo "FAIL: youtube A — raw/watch.md exists on main: the slug came from the URL, not the title"; fail=1; }
+git -C "$WIKI_PATH" cat-file -e "main:summary/computers-are-bad-actually-kyle-kingsbury-jepsen.md" 2>/dev/null \
+  || { echo "FAIL: youtube A — summary/ tier does not share the title slug"; fail=1; }
+
+# --- youtube case B: --force keeps a hand-chosen slug over the title ---------
+# resolve_slug's step 1 (the archive already holding this URL owns its slug)
+# must run before, and regardless of, the title rule: Nat renamed the
+# mis-slugged raw/watch.md files by hand, and a re-ingest must update those in
+# place rather than mint a second archive named after the title.
+printf -- '---\nurl: https://www.youtube.com/watch?v=hand01\ndate_fetched: 2026-08-01\n---\n\n# Old hand-renamed body\n\nold transcript\n' \
+  > "$WIKI_PATH/raw/hand-picked.md"
+git -C "$WIKI_PATH" add -A && git -C "$WIKI_PATH" commit -q -m "Seed a hand-renamed YouTube archive"
+YT_TRANSCRIPT2="$SANDBOX/yt-transcript-2.txt"
+printf '# A Video Somebody Renamed By Hand\n\n- **Channel:** C\n- **URL:** https://www.youtube.com/watch?v=hand01\n- **Duration:** 5m\n- **Transcribed:** 2026-09-22\n\n---\n\nNew transcript body, long enough to clear the length check comfortably.\n' \
+  > "$YT_TRANSCRIPT2"
+before_n=$(raw_count)
+STUB_MODE=autoslug TOPIC_TITLE="Hand Picked" TOPIC_REV=2 \
+  "$BIN/wiki-ingest-run" --force --content "$YT_TRANSCRIPT2" "https://www.youtube.com/watch?v=hand01" \
+  >/dev/null 2>"$SANDBOX/eyb"
+check "youtube: --force re-ingest keeps the hand-chosen slug" 0 $?
+[ "$(raw_count)" = "$before_n" ] \
+  || { echo "FAIL: youtube B — re-ingest added an archive ($before_n -> $(raw_count)), stderr: $(cat "$SANDBOX/eyb")"; fail=1; }
+git -C "$WIKI_PATH" show "main:raw/hand-picked.md" 2>/dev/null | grep -q "New transcript body" \
+  || { echo "FAIL: youtube B — raw/hand-picked.md was not the archive updated in place"; fail=1; }
+git -C "$WIKI_PATH" cat-file -e "main:raw/a-video-somebody-renamed-by-hand.md" 2>/dev/null \
+  && { echo "FAIL: youtube B — the title slug was minted alongside the hand-chosen one"; fail=1; }
+
+# --- youtube case C: the title rule is YouTube-only --------------------------
+# A non-YouTube --content file that happens to start with "# Some Title" must
+# still slug from its URL; otherwise every surf grab with a heading would
+# silently change the slug scheme for the rest of the wiki.
+TITLED_SRC="$SANDBOX/titled-article.txt"
+printf '# Some Title\n\nAn ordinary article body, long enough to clear the length check.\n' > "$TITLED_SRC"
+STUB_MODE=autoslug TOPIC_TITLE="Plain Article" \
+  "$BIN/wiki-ingest-run" --content "$TITLED_SRC" "https://example.invalid/articles/plain-url-slug" \
+  >/dev/null 2>"$SANDBOX/eyc"
+check "youtube: a non-YouTube titled source still slugs from the URL" 0 $?
+git -C "$WIKI_PATH" cat-file -e "main:raw/plain-url-slug.md" 2>/dev/null \
+  || { echo "FAIL: youtube C — raw/plain-url-slug.md is not on main, stderr: $(cat "$SANDBOX/eyc")"; fail=1; }
+git -C "$WIKI_PATH" cat-file -e "main:raw/some-title.md" 2>/dev/null \
+  && { echo "FAIL: youtube C — raw/some-title.md exists: the title rule fired for a non-YouTube URL"; fail=1; }
+
 # Topics-mode cases (fixed topics; spec docs/superpowers/specs/2026-09-11-fixed-topics-design.md)
 #
 # Everything above ran WITHOUT topics.md, and that is the proof legacy mode is
