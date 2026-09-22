@@ -2,13 +2,20 @@
 # wiki-ingest-fetch <url> | --file <path> — fetch/extract a source to cleaned
 # Markdown on stdout. Uses trafilatura (readability extraction).
 #
+# YouTube is the one exception: youtube.com / youtu.be URLs go through ytx
+# (github.com/gnat/ytx), which prints a markdown transcript headed by the video
+# title. curl|trafilatura on YouTube only ever returns the app-shell footer, so
+# without ytx a YouTube URL is exit 3 — never a fall-through to curl.
+#
 # Exit codes:
 #   0  non-empty content extracted (printed to stdout)
-#   3  nothing meaningful extracted (empty) — caller treats as fetch failure
+#   3  nothing meaningful extracted (empty) — caller treats as fetch failure;
+#      also a YouTube URL with ytx missing or failing
 #   1  tool missing / usage error
 #
 # TRAFILATURA env var overrides the binary path (default: trafilatura on PATH,
-# else ~/.local/bin/trafilatura).
+# else ~/.local/bin/trafilatura). WIKI_INGEST_YTX overrides the ytx binary
+# (default: ytx on PATH).
 set -u
 
 TRAF="${TRAFILATURA:-}"
@@ -30,6 +37,19 @@ case "${1:-}" in
   * ) SRC="$1" ;;
 esac
 
+# is_youtube_url <url> — host (after scheme and www./m.) is youtube.com or
+# youtu.be. Same intent as ytx's own matcher (cmd/ytx/main.go isYouTubeURL:
+# contains "youtube.com/" or "youtu.be/"). bin/wiki-ingest-run carries a copy
+# of this helper for its title-slug rule; the two must agree.
+is_youtube_url() {
+  local u="$1"
+  u="${u#http://}"; u="${u#https://}"; u="${u#www.}"; u="${u#m.}"
+  case "$u" in
+    youtube.com/*|youtu.be/*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 # Honest, identifiable User-Agent (env-overridable). curl does the fetch —
 # explicit UA + timeout + redirect handling — and trafilatura does readability
 # extraction from the returned HTML. This gives us full UA control (trafilatura's
@@ -41,6 +61,25 @@ TIMEOUT="${WIKI_INGEST_TIMEOUT:-30}"
 # --markdown keeps headings/lists/quotes; extraction strips nav/ads/boilerplate.
 if [ "$MODE" = "file" ]; then
   out=$("$TRAF" --markdown < "$SRC" 2>/dev/null)
+elif is_youtube_url "$SRC"; then
+  # ytx -no-gist -no-summary prints the transcript to stdout (per
+  # cmd/ytx/main.go) as "# <title>" + metadata bullets + transcript (per
+  # internal/publish/publish.go FormatTranscript). No gist, no LLM summary.
+  YTX="${WIKI_INGEST_YTX:-}"
+  if [ -z "$YTX" ]; then
+    if command -v ytx >/dev/null 2>&1; then YTX="ytx"
+    else
+      echo "wiki-ingest-fetch: YouTube URL but ytx is not installed (go install github.com/gnat/ytx/cmd/ytx@latest) — nothing to extract" >&2
+      exit 3
+    fi
+  elif ! command -v "$YTX" >/dev/null 2>&1; then
+    echo "wiki-ingest-fetch: WIKI_INGEST_YTX='$YTX' is not executable" >&2; exit 1
+  fi
+  out=$("$YTX" -no-gist -no-summary "$SRC" 2>/dev/null); yrc=$?
+  if [ "$yrc" -ne 0 ]; then
+    echo "wiki-ingest-fetch: ytx failed (rc=$yrc) for $SRC — nothing to extract" >&2
+    exit 3
+  fi
 else
   if ! command -v curl >/dev/null 2>&1; then
     echo "wiki-ingest-fetch: curl not found" >&2; exit 1
