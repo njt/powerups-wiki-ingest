@@ -1,0 +1,73 @@
+#!/bin/bash
+# wiki-agent --tools Read,Write[,Edit,Bash] [--context DIR] — run the nested
+# LLM CLI once: the prompt on stdin, the reply on stdout, cwd as the caller's.
+#
+# This is the only place that knows the CLI dialects. wiki-ingest-run,
+# wiki-compile and wiki-retag call it for every agentic LLM session.
+#
+# The CLI is $WIKI_INGEST_CLI (default claude). Its basename picks the dialect:
+#
+#   pi       pi -p --no-session --tools read,write,... --thinking LEVEL
+#              [--model M] --no-context-files --no-skills --no-prompt-templates
+#              [--append-system-prompt DIR/CLAUDE.md]
+#            Tool names are lower-cased. pi loads no AGENTS.md or CLAUDE.md of
+#            its own (so not the user's global ones); --context DIR appends
+#            DIR/CLAUDE.md, the wiki's schema, to the system prompt when that
+#            file exists. Extensions stay on: model providers come from them.
+#   other    claude -p --no-session-persistence --allowedTools Read,Write,...
+#              [--add-dir DIR]
+#            Any claude-compatible CLI (and every test stub) gets this dialect.
+#
+# Neither dialect saves a session transcript.
+#
+# Options:
+#   --tools LIST    comma-separated tools, in claude's spelling
+#                   (Read, Write, Edit, Bash). Required.
+#   --context DIR   the wiki root whose CLAUDE.md the model must follow
+#
+# Env:
+#   WIKI_INGEST_CLI          the CLI to run (default claude)
+#   WIKI_INGEST_PI_MODEL     pi only: --model, e.g. lunaroute/glm-5.3-flash-background
+#                            (unset: pi's configured default model)
+#   WIKI_INGEST_PI_THINKING  pi only: --thinking (default low). GLM cannot turn
+#                            reasoning off and reasoning counts against the
+#                            output-token limit; at high effort runs have
+#                            returned all reasoning and no answer.
+#
+# Exit: the CLI's own exit code; 64 usage error.
+#
+# Targets bash 3.2 (macOS /bin/bash).
+
+set -eu
+
+TOOLS=""; CONTEXT=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --tools)   [ $# -ge 2 ] || { echo "wiki-agent: --tools needs a list" >&2; exit 64; }; TOOLS="$2"; shift 2 ;;
+    --context) [ $# -ge 2 ] || { echo "wiki-agent: --context needs a directory" >&2; exit 64; }; CONTEXT="$2"; shift 2 ;;
+    -h|--help) sed -n '2,39p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    *) echo "wiki-agent: unknown argument: $1" >&2; exit 64 ;;
+  esac
+done
+[ -n "$TOOLS" ] || { echo "wiki-agent: --tools is required" >&2; exit 64; }
+
+CLI="${WIKI_INGEST_CLI:-claude}"
+
+case "$(basename "$CLI")" in
+  pi)
+    set -- -p --no-session \
+      --tools "$(printf '%s' "$TOOLS" | tr '[:upper:]' '[:lower:]')" \
+      --thinking "${WIKI_INGEST_PI_THINKING:-low}"
+    [ -z "${WIKI_INGEST_PI_MODEL:-}" ] || set -- "$@" --model "$WIKI_INGEST_PI_MODEL"
+    set -- "$@" --no-context-files --no-skills --no-prompt-templates
+    if [ -n "$CONTEXT" ] && [ -f "$CONTEXT/CLAUDE.md" ]; then
+      set -- "$@" --append-system-prompt "$CONTEXT/CLAUDE.md"
+    fi
+    ;;
+  *)
+    set -- -p --no-session-persistence --allowedTools "$TOOLS"
+    [ -z "$CONTEXT" ] || set -- "$@" --add-dir "$CONTEXT"
+    ;;
+esac
+
+exec "$CLI" "$@"
