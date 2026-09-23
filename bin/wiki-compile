@@ -32,9 +32,12 @@
 #   wiki-compile --theme "..." --dry-run       # build context, skip the LLM
 #   wiki-compile --theme "..." --branch curate/my-run
 #
-# Env: WIKI_PATH (required), WIKI_INGEST_CLI (default: claude)
+# Env: WIKI_PATH (required), WIKI_INGEST_CLI (default: claude; see wiki-agent)
 #   WIKI_COMPILE_MODE  agentic (default): $WIKI_INGEST_CLI reads the context and
-#                      writes the page with tools.
+#                      writes the page with tools, run through wiki-agent.
+#   WIKI_COMPILE_PI_MODEL  pi only: the model for compiles (default
+#                      $WIKI_INGEST_PI_MODEL); a compile wants a bigger model
+#                      than an ingest.
 #                      single: ONE chat-completions call through wiki-llm with
 #                      the context, the current page and its link list inlined;
 #                      the script writes the page, and every gate below still
@@ -57,7 +60,7 @@ while [ $# -gt 0 ]; do
     --branch)  BRANCH="${2:-}"; shift 2 ;;
     --dry-run) DRY_RUN=1; shift ;;
     --keep)    KEEP=1; shift ;;
-    -h|--help) sed -n '2,48p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,50p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "wiki-compile: unknown argument: $1" >&2; exit 2 ;;
   esac
 done
@@ -66,10 +69,11 @@ done
 [ -n "${WIKI_PATH:-}" ] || { echo "wiki-compile: WIKI_PATH is not set" >&2; exit 2; }
 [ -d "$WIKI_PATH/topic" ] || [ -f "$WIKI_PATH/topics.md" ] \
   || { echo "wiki-compile: no topic/ under $WIKI_PATH" >&2; exit 2; }
-CLI="${WIKI_INGEST_CLI:-claude}"
 MODE="${WIKI_COMPILE_MODE:-agentic}"
 case "$MODE" in
-  agentic) ;;
+  agentic)
+    AGENT="$(dirname "$0")/wiki-agent"
+    [ -x "$AGENT" ] || { echo "wiki-compile: wiki-agent not found beside me" >&2; exit 2; } ;;
   single)
     LLM="${WIKI_LLM:-$(dirname "$0")/wiki-llm}"
     [ -x "$LLM" ] || { echo "wiki-compile: WIKI_COMPILE_MODE=single but $LLM is not executable" >&2; exit 2; } ;;
@@ -206,7 +210,8 @@ the directory of its notes. Those titles are real pages; never shorten them.
 fi
 if [ "$MODE" = agentic ]; then
 set +e
-cat <<COMPILE_EOF | (cd "$WT" && "$CLI" -p --allowedTools "Read,Write" --add-dir "$WT")
+cat <<COMPILE_EOF | (cd "$WT" && WIKI_INGEST_PI_MODEL="${WIKI_COMPILE_PI_MODEL:-${WIKI_INGEST_PI_MODEL:-}}" \
+  "$AGENT" --tools Read,Write --context "$WT")
 You are COMPILING a wiki theme page. Wiki root: $WT
 
 Read these two files first:

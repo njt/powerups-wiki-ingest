@@ -84,6 +84,10 @@ if [ -z "$WIKI" ] || [ ! -d "$WIKI" ]; then
 fi
 CLI="${WIKI_INGEST_CLI:-claude}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# Every agentic LLM session goes through wiki-agent, which turns --tools and
+# --context into $CLI's own flags (claude or pi dialect).
+AGENT="$SCRIPT_DIR/wiki-agent"
+[ -x "$AGENT" ] || { echo "wiki-ingest-run: wiki-agent not found beside me" >&2; exit 64; }
 INGEST_MODE="${WIKI_INGEST_MODE:-agentic}"
 case "$INGEST_MODE" in
   agentic) ;;
@@ -651,7 +655,8 @@ fi
 
 # --- Run the LLM CLI ------------------------------------------------------------
 
-# $CLI (default: claude) runs with --allowedTools as a real guardrail — no
+# $CLI (default: claude) runs through wiki-agent with a tool allowlist as a
+# real guardrail (claude --allowedTools, pi --tools) — no
 # --dangerously-skip-permissions here. If a user points WIKI_INGEST_CLI at a
 # wrapper that adds skip-permissions internally, that is their choice.
 #
@@ -923,7 +928,7 @@ print("WROTE note/" + title + ".md")
 # wiki has migrated, and sharing paragraphs between the two would make a
 # topics-mode edit silently change the legacy prompt.
 if [ "$SUMMARY_ONLY" -eq 1 ] && [ "$TOPICS_MODE" -eq 1 ]; then
-  cat <<INGEST_EOF | (cd "$WT" && "$CLI" -p --allowedTools "Read,Write" --add-dir "$WT") || llm_failed
+  cat <<INGEST_EOF | (cd "$WT" && "$AGENT" --tools Read,Write --context "$WT") || llm_failed
 You are backfilling ONE missing precis in an Obsidian wiki. The source was
 ingested previously and its verbatim text is already archived at raw/$SLUG.md.
 Do NOT fetch anything. Do NOT use WebFetch, WebSearch, or any browser tool.
@@ -968,7 +973,7 @@ analysis note; re-logging or re-indexing it would duplicate those entries.
 - Today's date is $INGEST_DATE.
 INGEST_EOF
 elif [ "$SUMMARY_ONLY" -eq 1 ]; then
-  cat <<INGEST_EOF | (cd "$WT" && "$CLI" -p --allowedTools "Read,Write" --add-dir "$WT") || llm_failed
+  cat <<INGEST_EOF | (cd "$WT" && "$AGENT" --tools Read,Write --context "$WT") || llm_failed
 You are backfilling ONE missing precis in an Obsidian wiki. The source was
 ingested previously and its verbatim text is already archived at raw/$SLUG.md.
 Do NOT fetch anything. Do NOT use WebFetch, WebSearch, or any browser tool.
@@ -1008,7 +1013,7 @@ page; re-logging or re-indexing it would duplicate those entries.
 - Today's date is $INGEST_DATE.
 INGEST_EOF
 elif [ "$VERBATIM_ONLY" -eq 1 ]; then
-  cat <<INGEST_EOF | (cd "$WT" && "$CLI" -p --allowedTools "Read,Bash" --add-dir "$WT") || llm_failed
+  cat <<INGEST_EOF | (cd "$WT" && "$AGENT" --tools Read,Bash --context "$WT") || llm_failed
 You are validating one archived source. The text is saved verbatim at
 raw/$SLUG.md. Do NOT fetch anything. Do NOT create or edit any other file.
 
@@ -1018,7 +1023,7 @@ If it IS real content, do nothing (leave the file as-is). Write no other files,
 do not touch summary/, topic/, index.md, or log.md.
 INGEST_EOF
 elif [ "$REPO_MODE" -eq 1 ] && [ "$TOPICS_MODE" -eq 1 ]; then
-  cat <<INGEST_EOF | (cd "$WT" && "$CLI" -p --allowedTools "Read,Write,Edit,Bash" --add-dir "$WT") || llm_failed
+  cat <<INGEST_EOF | (cd "$WT" && "$AGENT" --tools Read,Write,Edit,Bash --context "$WT") || llm_failed
 You are ingesting a GitHub repository into an Obsidian wiki. You have the full repo cloned locally for deep analysis.
 
 Wiki location: $WT
@@ -1027,7 +1032,7 @@ Repo URL: $INGEST_URL
 
 The repo's README has ALREADY been saved verbatim to raw/$SLUG.md — do NOT refetch it. Read the cloned repo at $CLONE_DIR for code. Do NOT use WebFetch, WebSearch, or any browser tool.
 
-The wiki CLAUDE.md (loaded via --add-dir) defines page format and the layout: raw/ = verbatim, summary/ = precis tagged with topics, note/ = one analysis page per source, topic/ = compiled topic pages that you never write. Follow it.
+The wiki CLAUDE.md (already loaded for you) defines page format and the layout: raw/ = verbatim, summary/ = precis tagged with topics, note/ = one analysis page per source, topic/ = compiled topic pages that you never write. Follow it.
 
 IMPORTANT: You are one step inside a larger pipeline. Work ONLY inside $WT (plus reading $CLONE_DIR). Do NOT run the wiki-ingest scripts, do NOT use surf or any browser automation, and do NOT run git branch/commit/merge/push — the caller owns all orchestration, commits, and retries.
 $EXTRA_NOTES
@@ -1132,7 +1137,7 @@ Guidelines:
 - Today's date is $INGEST_DATE
 INGEST_EOF
 elif [ "$REPO_MODE" -eq 1 ]; then
-  cat <<INGEST_EOF | (cd "$WT" && "$CLI" -p --allowedTools "Read,Write,Edit,Bash" --add-dir "$WT") || llm_failed
+  cat <<INGEST_EOF | (cd "$WT" && "$AGENT" --tools Read,Write,Edit,Bash --context "$WT") || llm_failed
 You are ingesting a GitHub repository into an Obsidian wiki. You have the full repo cloned locally for deep analysis.
 
 Wiki location: $WT
@@ -1234,13 +1239,13 @@ INGEST_EOF
 elif [ "$TOPICS_MODE" -eq 1 ] && [ "$INGEST_MODE" = single ] && [ "$FORCE" -eq 0 ]; then
   single_ingest
 elif [ "$TOPICS_MODE" -eq 1 ]; then
-  cat <<INGEST_EOF | (cd "$WT" && "$CLI" -p --allowedTools "Read,Write,Edit,Bash" --add-dir "$WT") || llm_failed
+  cat <<INGEST_EOF | (cd "$WT" && "$AGENT" --tools Read,Write,Edit,Bash --context "$WT") || llm_failed
 You are curating one source into an Obsidian wiki. The source text has ALREADY
 been fetched and saved verbatim to raw/$SLUG.md (frontmatter + body). Do NOT
 fetch anything. Do NOT use WebFetch, WebSearch, or any browser tool.
 
 Wiki location: $WT
-The wiki CLAUDE.md (loaded via --add-dir) defines page format and the layout:
+The wiki CLAUDE.md (already loaded for you) defines page format and the layout:
 raw/ = verbatim, summary/ = precis tagged with topics, note/ = one analysis
 page per source, topic/ = compiled topic pages that you never write. Follow it.
 
@@ -1308,7 +1313,7 @@ Guidelines:
 - Today's date is $INGEST_DATE.
 INGEST_EOF
 else
-  cat <<INGEST_EOF | (cd "$WT" && "$CLI" -p --allowedTools "Read,Write,Edit,Bash" --add-dir "$WT") || llm_failed
+  cat <<INGEST_EOF | (cd "$WT" && "$AGENT" --tools Read,Write,Edit,Bash --context "$WT") || llm_failed
 You are curating one source into an Obsidian wiki. The source text has ALREADY
 been fetched and saved verbatim to raw/$SLUG.md (frontmatter + body). Do NOT
 fetch anything. Do NOT use WebFetch, WebSearch, or any browser tool.

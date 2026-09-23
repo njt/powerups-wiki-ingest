@@ -104,6 +104,7 @@ STUB="$SANDBOX/stub-cli"
 cat > "$STUB" <<'STUB_EOF'
 #!/bin/bash
 set -u
+if [ -n "${STUB_ARGV:-}" ]; then printf '%s\n' "$@" > "$STUB_ARGV"; fi   # argv, via wiki-agent
 prompt=$(cat)
 
 # "Then write exactly one file: <path>" appears in every compile prompt.
@@ -178,6 +179,7 @@ exit 0
 STUB_EOF
 chmod +x "$STUB"
 export WIKI_INGEST_CLI="$STUB"
+export STUB_ARGV="$SANDBOX/argv"
 export STUB_LOG="$SANDBOX/stub.log"
 export STUB_WROTE="$SANDBOX/stub-wrote.md"
 
@@ -313,6 +315,8 @@ echo "=== wiki-compile ==="
 rm -f "$STUB_WROTE"
 run_compile happy --theme "Test Theme" --branch curate/happy
 check "happy: a well-formed page compiles" 0 "$RC"
+assert "happy: the CLI ran through wiki-agent (claude dialect, no session saved)" \
+  "$([ "$(head -5 "$STUB_ARGV")" = "$(printf '%s\n' -p --no-session-persistence --allowedTools Read,Write --add-dir)" ]; echo $?)"
 assert "happy: branch curate/happy was created" "$(branch_exists curate/happy; echo $?)"
 [ -f "$STUB_WROTE" ] \
   || { echo "FAIL: happy — the stub was never invoked"; fail=1; }

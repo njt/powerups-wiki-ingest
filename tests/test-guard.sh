@@ -52,6 +52,7 @@ STUB="$SANDBOX/stub-cli"
 cat > "$STUB" <<'STUB_EOF'
 #!/bin/bash
 set -u
+if [ -n "${STUB_ARGV:-}" ]; then printf '%s\n' "$@" > "$STUB_ARGV"; fi   # argv, via wiki-agent
 prompt=$(cat)    # drain the prompt (the *-autoslug modes also read it)
 s="${STUB_SLUG:-unknown}"
 # Optionally keep the prompt, so a case can assert what the LLM was told.
@@ -223,6 +224,7 @@ exit 0
 STUB_EOF
 chmod +x "$STUB"
 export WIKI_INGEST_CLI="$STUB"
+export STUB_ARGV="$SANDBOX/argv"
 
 # --- scratch wiki -------------------------------------------------------------
 "$BIN/wiki-ingest-setup" >/dev/null || { echo "FAIL: wiki-ingest-setup failed"; exit 1; }
@@ -294,6 +296,8 @@ grep -q "Stray Title.md" "$SANDBOX/e3" \
 STUB_MODE=good STUB_SLUG=case-four \
   "$BIN/wiki-ingest-run" --content "$SRC" https://example.invalid/case-four >/dev/null 2>"$SANDBOX/e4"
 check "correct ingest commits" 0 $?
+[ "$(head -5 "$STUB_ARGV")" = "$(printf '%s\n' -p --no-session-persistence --allowedTools Read,Write,Edit,Bash --add-dir)" ] \
+  || { echo "FAIL: good — the CLI was not run through wiki-agent's claude dialect: $(tr '\n' ' ' < "$STUB_ARGV")"; fail=1; }
 [ "$(head_subject)" = "Ingest: https://example.invalid/case-four" ] \
   || { echo "FAIL: good — HEAD is '$(head_subject)', stderr: $(cat "$SANDBOX/e4")"; fail=1; }
 for f in raw/case-four.md summary/case-four.md "topic/Test Page.md"; do

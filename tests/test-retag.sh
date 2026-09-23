@@ -65,6 +65,7 @@ STUB="$SANDBOX/stub-cli"
 cat > "$STUB" <<'STUB_EOF'
 #!/bin/bash
 set -u
+if [ -n "${STUB_ARGV:-}" ]; then printf '%s\n' "$@" > "$STUB_ARGV"; fi   # argv, via wiki-agent
 prompt=$(cat)
 [ -n "${STUB_PROMPT:-}" ] && printf '%s' "$prompt" > "$STUB_PROMPT"
 slugs=$(printf '%s\n' "$prompt" | sed -n 's/^## SUMMARY: //p')
@@ -104,6 +105,7 @@ exit 0
 STUB_EOF
 chmod +x "$STUB"
 export WIKI_INGEST_CLI="$STUB"
+export STUB_ARGV="$SANDBOX/argv"
 export STUB_LOG="$SANDBOX/stub.log"
 export STUB_PROMPT="$SANDBOX/stub-prompt.txt"
 export STUB_ANSWERS="$SANDBOX/answers.txt"
@@ -214,6 +216,8 @@ s6|["beta"]
 EOF
 run_retag all --all --batch 2 --branch curate/retag-all
 check "all: exits 0" 0 "$RC"
+assert "all: the CLI ran through wiki-agent (claude dialect, no session saved)" \
+  "$([ "$(cat "$STUB_ARGV")" = "$(printf '%s\n' -p --no-session-persistence --allowedTools Read)" ]; echo $?)"
 assert_live_checkout_pristine "all"
 assert "all: three batches, three commits on the branch" "$([ "$(commits_over_main curate/retag-all)" = 3 ]; echo $?)"
 assert "all: the stub ran three times" "$([ "$(wc -l < "$STUB_LOG" | tr -d ' ')" = 3 ]; echo $?)"

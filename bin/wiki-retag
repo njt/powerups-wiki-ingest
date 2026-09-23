@@ -29,7 +29,7 @@ Options:
 
 Flow, per batch: build one prompt (the topics table, then each digest's slug,
 title, current topics and the first 200 words of its body), pipe it to
-`$WIKI_INGEST_CLI -p --allowedTools Read` with a DETACHED throwaway worktree as
+`wiki-agent --tools Read` ($WIKI_INGEST_CLI) with a DETACHED throwaway worktree as
 cwd, extract the first ```json fence from stdout (else the first balanced
 {...} that parses), and for every answered slug in the batch normalise the
 list with wiki-meta's rules: title -> slug, case folded, deduplicated, at most
@@ -44,13 +44,14 @@ against HEAD: only summary/*.md may differ, and each may differ only in its
 `topics:` key — the rest of the frontmatter and the whole body must be byte
 for byte what HEAD has. A violation reverts the worktree, reports what moved,
 and exits 5 without committing that batch; earlier batches stay committed.
-That diff check is the guardrail, not --allowedTools: the configured CLI is a
-wrapper that runs with permissions skipped (design ledger A6).
+That diff check is the guardrail, not the tool allowlist: the configured CLI
+may be a wrapper that runs with permissions skipped (design ledger A6).
 
 Exit: 0 done  2 usage/config  3 nothing to do / no topics.md
       4 the model failed or its output was unusable  5 validation failed
 
-Env: WIKI_PATH, WIKI_INGEST_CLI (default claude).
+Env: WIKI_PATH, WIKI_INGEST_CLI (default claude; claude or pi dialect, see
+wiki-agent --help), WIKI_INGEST_PI_MODEL and WIKI_INGEST_PI_THINKING (pi only).
 Python 3.8+, standard library only; wiki-meta is imported from beside this file.
 """
 
@@ -275,11 +276,14 @@ def build_prompt(wm, wt, topic_list, batch, current):
 
 
 def run_model(cli, prompt, cwd):
-    cmd = [cli, "-p", "--allowedTools", "Read"]
+    # wiki-agent turns --tools into the CLI's own dialect (claude or pi) and
+    # execs $WIKI_INGEST_CLI, which it reads from the environment we inherit.
+    agent = os.path.join(os.path.dirname(os.path.abspath(__file__)), "wiki-agent")
+    cmd = [agent, "--tools", "Read"]
     try:
         r = subprocess.run(cmd, input=prompt, cwd=cwd, capture_output=True, text=True)
     except OSError as exc:
-        die(f"cannot run {cli}: {exc.strerror}", 4)
+        die(f"cannot run {agent}: {exc.strerror}", 4)
     if r.returncode != 0:
         tail = (r.stderr or "").strip().splitlines()[-3:]
         die(f"{cli} exited {r.returncode}" + (": " + " | ".join(tail) if tail else ""), 4)
