@@ -38,7 +38,7 @@ fi
 export PATH="$WIKI_INGEST_BIN:$PATH"
 
 : "${WIKI_PATH:?Set WIKI_PATH to your Obsidian wiki directory (the one with raw/ summary/ note/ topic/ topics.md index.md log.md)}"
-: "${WIKI_INGEST_CLI:=claude}"   # the nested LLM CLI that writes the pages; must support -p --allowedTools --add-dir
+: "${WIKI_INGEST_CLI:=claude}"   # the nested LLM CLI that writes the pages: claude (default) or pi
 ```
 
 If a later `bash` call reports `wiki-ingest-run: command not found`, that shell
@@ -50,9 +50,14 @@ did not inherit the export — re-run this block at the top of that same call.
   instructions; tell the user to set it and run `wiki-ingest-setup` once if the
   wiki doesn't yet exist.
 - `WIKI_INGEST_CLI` (optional, default `claude`) — the CLI the pipeline shells
-  out to *for the page-writing analysis*. It must accept `-p`, `--allowedTools`,
-  and `--add-dir`. `claude` works. `pi` does NOT (it lacks `--allowedTools`/
-  `--add-dir`), so leave this as `claude` or point it at a wrapper.
+  out to *for the page-writing analysis*, always through `wiki-agent`. Two
+  dialects, picked by the basename. `pi` gets pi's flags (`--no-session`,
+  lower-case `--tools`, the wiki's CLAUDE.md appended to the system prompt, no
+  other context files); `WIKI_INGEST_PI_MODEL` picks the model,
+  `WIKI_INGEST_PI_THINKING` the thinking level (default `low`), and
+  `WIKI_COMPILE_PI_MODEL` the compile model. Anything else is treated as
+  `claude` (`-p --no-session-persistence --allowedTools --add-dir`). Neither
+  saves a session transcript.
 - `trafilatura` must be installed (`pipx install trafilatura`) — the fetch step
   is `curl | trafilatura` (readability extraction, no browser).
 - `ytx` (optional, `go install github.com/gnat/ytx/cmd/ytx@latest`) — YouTube
@@ -63,7 +68,7 @@ did not inherit the export — re-run this block at the top of that same call.
 Sanity check before first run:
 
 ```bash
-command -v wiki-ingest-run wiki-ingest-dupcheck wiki-ingest-setup trafilatura "$WIKI_INGEST_CLI"
+command -v wiki-ingest-run wiki-agent wiki-ingest-dupcheck wiki-ingest-setup trafilatura "$WIKI_INGEST_CLI"
 ```
 
 ## The scripts (call these, don't reimplement)

@@ -106,7 +106,10 @@ Set these in your Claude Code environment (e.g. `~/.claude/settings.json` under 
 | Variable | Required | Default | Meaning |
 |----------|----------|---------|---------|
 | `WIKI_PATH` | yes | — | absolute path to your Obsidian wiki directory |
-| `WIKI_INGEST_CLI` | no | `claude` | the LLM CLI used for analysis and writing |
+| `WIKI_INGEST_CLI` | no | `claude` | the LLM CLI used for analysis and writing. Two dialects, picked by the basename: `pi` runs `pi -p --no-session --tools read,write,... --no-context-files --append-system-prompt <wiki>/CLAUDE.md`; anything else is treated as `claude` and runs `claude -p --no-session-persistence --allowedTools ... --add-dir <wiki>`. Neither saves a session transcript. See `wiki-agent --help` |
+| `WIKI_INGEST_PI_MODEL` | no | pi's default | pi only: `--model`, e.g. `lunaroute/glm-5.3-flash-background` |
+| `WIKI_INGEST_PI_THINKING` | no | `low` | pi only: `--thinking`. GLM cannot turn reasoning off and it counts against the output limit; at high effort runs have returned all reasoning and no answer |
+| `WIKI_COMPILE_PI_MODEL` | no | `WIKI_INGEST_PI_MODEL` | pi only: the model `wiki-compile` uses (a compile wants a bigger model than an ingest) |
 | `WIKI_INGEST_MODE` | no | `agentic` | `single`: a fresh topics-mode article ingest is ONE chat-completions call via `wiki-llm` (the script writes summary, note, index and log); `--repo`, `--summary-only`, `--force` stay agentic |
 | `WIKI_COMPILE_MODE` | no | `agentic` | `single`: `wiki-compile` inlines the context, the current page and its links in ONE call via `wiki-llm`; same gates |
 | `WIKI_LLM_BASE_URL` | for `single` | — | OpenAI-compatible endpoint, e.g. `https://gw.lunaroute.com/v1` |
