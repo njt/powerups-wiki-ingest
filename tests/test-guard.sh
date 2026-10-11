@@ -213,6 +213,34 @@ case "${STUB_MODE:-nothing}" in
     write_note "Second Note $s"
     note_index_log
     ;;
+  # A parallel peer that took the same slug and note title and merged FIRST
+  # (kata 925f). The stub commits that peer straight onto main of the wiki while
+  # our worktree, cut before it, still shows both free — the race, with no
+  # timing involved. note-peer-once does it while $PEER_ONCE exists (one-shot);
+  # note-peer-always does it on every run, so the re-run budget runs out. Like
+  # a real LLM, the stub picks a different note title when its first choice is
+  # visibly taken, which is what the fresh worktree of a re-run lets it see.
+  note-peer-once|note-peer-always)
+    s=$(prompt_slug); url=$(sed -n 's/^url: //p' "raw/$s.md" | head -1)
+    title="${NOTE_TITLE:-Note $s}"
+    [ ! -e "note/$title.md" ] || title="$title ($s)"
+    [ -z "${STUB_COUNT:-}" ] || echo "$s" >> "$STUB_COUNT"
+    if [ "$STUB_MODE" = note-peer-always ] || { [ -n "${PEER_ONCE:-}" ] && [ -e "$PEER_ONCE" ]; }; then
+      [ -z "${PEER_ONCE:-}" ] || rm -f "$PEER_ONCE"
+      purl="https://peer.example.invalid/$s"
+      ( cd "$WIKI_PATH" || exit 1
+        printf -- '---\nurl: %s\ndate_fetched: 2026-10-11\n---\n\nPEER BODY for %s\n' "$purl" "$purl" > "raw/$s.md"
+        printf -- '---\nurl: %s\ntopics:\n  - alpha\n---\n\npeer precis\n' "$purl" > "summary/$s.md"
+        printf '# %s\n\npeer note\n\n---\n*Sources: [[raw/%s]], [[summary/%s]]*\n' "$title" "$s" "$s" > "note/$title.md"
+        printf -- '- [[%s]] — peer entry for %s\n' "$title" "$purl" >> index.md
+        printf -- '- peer entry for %s -> raw/%s.md\n' "$purl" "$s" >> log.md
+        git add -A && git commit -q -m "Ingest: $purl" ) >/dev/null 2>&1 \
+        || { echo "stub: could not commit the peer onto main" >&2; exit 1; }
+    fi
+    write_topics_summary 'topics:' '  - alpha'
+    write_note "$title"
+    NOTE_TITLE="$title" note_index_log
+    ;;
   summary-topics-flow)
     # --summary-only in topics mode: summary/ only, topics: in flow form.
     s=$(prompt_slug); url=$(sed -n 's/^url: //p' "raw/$s.md" | head -1)
@@ -1060,6 +1088,75 @@ check "topics: --force re-ingest of the same source updates its own note" 0 $?
   || { echo "FAIL: topics re-ingest — added an archive, stderr: $(cat "$SANDBOX/eto3")"; fail=1; }
 git -C "$WIKI_PATH" show "main:note/$NOTE_TG.md" | grep -q '^body rev 2$' \
   || { echo "FAIL: topics re-ingest — note/$NOTE_TG.md on main is not the updated revision, stderr: $(cat "$SANDBOX/eto3")"; fail=1; }
+
+# --- topics: a peer that took our slug and title first is re-run past (925f) --
+# Real case: atoll92.github.io/agent-standup/ and github.com/Atoll92/agent-standup
+# in one parallel batch both took slug agent-standup and note "Agent Standup";
+# the second to merge hit add/add on raw/, summary/ and note/ and retried a
+# content conflict five times. Now it must re-run once from a fresh worktree,
+# land under a suffixed slug and a distinct title, and leave nothing behind.
+ingest_branches() { git -C "$WIKI_PATH" branch --list 'ingest-*' | sed 's/^[*+ ]*//' | sort; }
+ingest_worktrees() { git -C "$WIKI_PATH" worktree list --porcelain | awk '/^worktree /{print $2}' | grep 'wiki-ingest-' | sort; }
+no_markers() { ! git -C "$WIKI_PATH" grep -qE '^(<<<<<<<|>>>>>>>) ' main -- . 2>/dev/null; }
+URL_PC="https://example.invalid/agent-standup"
+NOTE_PC="Agent Standup"
+br_before=$(ingest_branches); wt_before=$(ingest_worktrees)
+: > "$SANDBOX/peer-once"; : > "$SANDBOX/stub-count"
+STUB_MODE=note-peer-once NOTE_TITLE="$NOTE_PC" PEER_ONCE="$SANDBOX/peer-once" STUB_COUNT="$SANDBOX/stub-count" \
+  "$BIN/wiki-ingest-run" --content "$SRC_T" "$URL_PC" >/dev/null 2>"$SANDBOX/epc"
+check "collision race: a peer's add/add is re-run past, not failed" 0 $?
+[ ! -e "$SANDBOX/peer-once" ] \
+  || { echo "FAIL: collision race — the peer was never committed, so the case tested nothing"; fail=1; }
+[ "$(wc -l < "$SANDBOX/stub-count" | tr -d ' ')" = 2 ] \
+  || { echo "FAIL: collision race — expected 2 LLM runs (original + one re-run), got: $(tr '\n' ' ' < "$SANDBOX/stub-count")"; fail=1; }
+grep -q "collided with a peer ingest" "$SANDBOX/epc" && grep -q "re-running $URL_PC" "$SANDBOX/epc" \
+  || { echo "FAIL: collision race — stderr does not report the collision re-run: $(cat "$SANDBOX/epc")"; fail=1; }
+for p in raw/agent-standup.md summary/agent-standup.md "note/$NOTE_PC.md"; do
+  grep -qF "$p" "$SANDBOX/epc" || { echo "FAIL: collision race — stderr does not name colliding path $p"; fail=1; }
+done
+git -C "$WIKI_PATH" show main:raw/agent-standup.md 2>/dev/null | grep -q '^url: https://peer.example.invalid/agent-standup$' \
+  || { echo "FAIL: collision race — the peer's raw/agent-standup.md is not intact on main"; fail=1; }
+pc_slug=$(git -C "$WIKI_PATH" grep -l "^url: $URL_PC\$" main -- raw/ 2>/dev/null | sed 's|^main:raw/||; s|\.md$||')
+case "$pc_slug" in
+  agent-standup-?*) : ;;
+  *) echo "FAIL: collision race — ours should be under a suffixed slug, found '$pc_slug', stderr: $(cat "$SANDBOX/epc")"; fail=1 ;;
+esac
+git -C "$WIKI_PATH" cat-file -e "main:summary/$pc_slug.md" 2>/dev/null \
+  || { echo "FAIL: collision race — no summary/$pc_slug.md on main"; fail=1; }
+git -C "$WIKI_PATH" show "main:note/$NOTE_PC ($pc_slug).md" 2>/dev/null | grep -q "raw/$pc_slug" \
+  || { echo "FAIL: collision race — our note is not on main under a distinct title citing raw/$pc_slug"; fail=1; }
+no_markers || { echo "FAIL: collision race — conflict markers on main"; fail=1; }
+git -C "$WIKI_PATH" rev-parse -q --verify MERGE_HEAD >/dev/null \
+  && { echo "FAIL: collision race — a merge was left in progress"; fail=1; }
+[ "$(ingest_branches)" = "$br_before" ] \
+  || { echo "FAIL: collision race — ingest branches changed: before [$br_before] after [$(ingest_branches)]"; fail=1; }
+[ "$(ingest_worktrees)" = "$wt_before" ] \
+  || { echo "FAIL: collision race — ingest worktrees left behind: $(ingest_worktrees)"; fail=1; }
+
+# --- topics: a collision on every run exhausts the re-run budget ---------------
+# Three runs (original + two re-runs), then a loud exit 1 naming the collision,
+# with only the last run's branch kept — never a loop.
+URL_PX="https://example.invalid/always-collides"
+br_before=$(ingest_branches)
+: > "$SANDBOX/stub-count"
+STUB_MODE=note-peer-always NOTE_TITLE="Always Collides" STUB_COUNT="$SANDBOX/stub-count" \
+  "$BIN/wiki-ingest-run" --content "$SRC_T" "$URL_PX" >/dev/null 2>"$SANDBOX/epx"
+check "collision race: an exhausted re-run budget fails loudly" 1 $?
+[ "$(wc -l < "$SANDBOX/stub-count" | tr -d ' ')" = 3 ] \
+  || { echo "FAIL: collision budget — expected 3 LLM runs, got: $(tr '\n' ' ' < "$SANDBOX/stub-count")"; fail=1; }
+grep -q "slug/title collision with peer ingests persisted through 2 re-runs" "$SANDBOX/epx" \
+  || { echo "FAIL: collision budget — wrong message: $(cat "$SANDBOX/epx")"; fail=1; }
+git -C "$WIKI_PATH" grep -q "^url: $URL_PX\$" main -- raw/ 2>/dev/null \
+  && { echo "FAIL: collision budget — $URL_PX reached main"; fail=1; }
+no_markers || { echo "FAIL: collision budget — conflict markers on main"; fail=1; }
+git -C "$WIKI_PATH" rev-parse -q --verify MERGE_HEAD >/dev/null \
+  && { echo "FAIL: collision budget — a merge was left in progress"; fail=1; }
+new_br=$(comm -13 <(printf '%s\n' "$br_before") <(ingest_branches) | sed '/^$/d')
+[ "$(printf '%s\n' "$new_br" | sed '/^$/d' | wc -l | tr -d ' ')" = 1 ] \
+  || { echo "FAIL: collision budget — expected exactly the last run's branch kept, got [$new_br]"; fail=1; }
+for b in $new_br; do git -C "$WIKI_PATH" branch -D "$b" >/dev/null 2>&1; done
+[ -z "$(ingest_worktrees)" ] \
+  || { echo "FAIL: collision budget — ingest worktrees left behind: $(ingest_worktrees)"; fail=1; }
 
 # --- topics: --summary-only writes topics: too --------------------------------
 # A flow list from the stub is normalised to block form; a summary with no

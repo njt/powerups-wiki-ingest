@@ -13,6 +13,16 @@
 # fetched transcript's title line, so the fetch happens before the slug is
 # resolved. A URL an archive already holds keeps that archive's slug regardless.
 #
+# The slug, and the LLM's note title, are chosen against this ingest's own
+# worktree, which cannot see a parallel peer's not-yet-merged files (kata 925f).
+# Two sources that land on the same slug or title both look free; the second to
+# merge gets add/add conflicts. That merge is aborted at once (a content
+# conflict never clears on retry), the unmerged branch is deleted, and the whole
+# ingest re-runs with the original arguments from a fresh worktree off main,
+# where the peer's files are visible and the slug ladder suffixes. At most two
+# re-runs (WIKI_INGEST_COLLISION_RERUN counts them), so a third racing peer is
+# still absorbed; after that it is exit 1 with the branch kept.
+#
 # Two modes, chosen by whether topics.md exists in the wiki (the gate is the
 # file, not a flag, because the hourly job runs this script from the working
 # tree and a wiki must switch over at exactly the commit that lands topics.md):
@@ -59,7 +69,10 @@
 #      an LLM that wrote nothing, or one that wrote outside summary/; for an
 #      ingest, a slug ladder with no free candidate left; and, in topics mode,
 #      an LLM that wrote under topic/, edited topics.md, or staged anything
-#      other than exactly one new note/ page
+#      other than exactly one new note/ page; and a slug/title collision with
+#      peer ingests that persisted through both automatic re-runs
+#   A collision re-run exits with the re-run's own code (so a peer that turns
+#   out to have ingested the SAME URL makes it 2, duplicate).
 #
 # Single call (WIKI_INGEST_MODE=single; default agentic): a fresh topics-mode
 # article ingest makes ONE chat-completions request through wiki-llm instead of
@@ -76,6 +89,10 @@
 # Targets bash 3.2 (macOS /bin/bash). Runs non-interactively (launchd-safe).
 
 set -eu
+
+# The original argv, before option parsing consumes it: a slug/title collision
+# re-runs the whole script with exactly these arguments (see the main merge).
+ORIG_ARGV=("$@")
 
 WIKI="${WIKI_PATH:-}"
 if [ -z "$WIKI" ] || [ ! -d "$WIKI" ]; then
@@ -432,6 +449,16 @@ trap cleanup EXIT
 # it, and the next ingest auto-commits the peer's files as deletions — a whole
 # ingest lost after it exited 0 (2026-09-20). Skipping the abort just waits the
 # peer out.
+#
+# Returns 0 merged, 1 out of retries, 3 slug/title collision: OUR merge stopped
+# on add/add paths (named in MERGE_COLLISIONS), meaning a peer that merged first
+# created a file this ingest also created. That is a content conflict, so it is
+# aborted and returned at once instead of retried. Detected from the index
+# stages (ls-files -u) rather than `status --porcelain`'s AA, which is the same
+# condition but C-quotes paths containing a space — and note titles have them:
+# add/add is the one unmerged state with no stage 1 (no common ancestor) and
+# both stages 2 and 3.
+MERGE_COLLISIONS=""
 merge_with_retry() {
   local dir="$1" attempt=1 ours
   ours=$(git -C "$dir" rev-parse -q --verify "$BRANCH^{commit}" 2>/dev/null || true)
@@ -440,7 +467,11 @@ merge_with_retry() {
       return 0
     fi
     if [ -n "$ours" ] && [ "$(git -C "$dir" rev-parse -q --verify MERGE_HEAD 2>/dev/null)" = "$ours" ]; then
+      MERGE_COLLISIONS=$(git -C "$dir" -c core.quotePath=false ls-files -u 2>/dev/null | awk -F'\t' '
+        { split($1, f, " "); st[$2] = st[$2] f[3] }
+        END { for (p in st) if (st[p] !~ /1/ && st[p] ~ /2/ && st[p] ~ /3/) print p }' | sort)
       git -C "$dir" merge --abort 2>/dev/null || true
+      [ -z "$MERGE_COLLISIONS" ] || return 3
     fi
     sleep 3
     attempt=$((attempt + 1))
@@ -593,6 +624,8 @@ if [ "$DRY_RUN" -eq 1 ]; then
   TWT="/tmp/wiki-$THROWAWAY"
   git -C "$WIKI" worktree add "$TWT" -b "$THROWAWAY" main
 
+  # The marker's name is branch-unique and nothing else is staged, so a
+  # collision (rc 3) cannot arise here; every failure stays a failure.
   if ! merge_with_retry "$TWT"; then
     echo "DRY-RUN FAILED: merge into throwaway branch failed for $INGEST_URL" >&2
     exit 1
@@ -1609,7 +1642,35 @@ git -C "$WIKI" diff --cached --quiet 2>/dev/null || \
 
 # --- Merge into main (with retry) + push ----------------------------------------
 
-if ! merge_with_retry "$WIKI"; then
+set +e; merge_with_retry "$WIKI"; mrc=$?; set -e
+if [ "$mrc" -eq 3 ]; then
+  echo "wiki-ingest-run: $INGEST_URL collided with a peer ingest that merged first — add/add on: $(printf '%s' "$MERGE_COLLISIONS" | tr '\n' '|' | sed 's/|/, /g')" >&2
+  reruns="${WIKI_INGEST_COLLISION_RERUN:-0}"
+  case "$reruns" in ''|*[!0-9]*) reruns=0 ;; esac
+  # --summary-only writes summary/<slug>.md for an archive that already exists,
+  # so its one add/add is a peer backfilling the same source at the same time:
+  # the precis is there now, and a re-run would only overwrite it.
+  if [ "$SUMMARY_ONLY" -eq 1 ]; then
+    echo "MERGE FAILED for $INGEST_URL: a peer backfilled summary/$SLUG.md first — branch $BRANCH kept" >&2
+    exit 1
+  fi
+  if [ "$reruns" -lt 2 ]; then
+    echo "wiki-ingest-run: slug/title collision — re-running $INGEST_URL from a fresh worktree off main (re-run $((reruns + 1)) of 2)" >&2
+    # Our branch is superseded by the re-run. cleanup removes the worktree first
+    # (a checked-out branch cannot be deleted); the EXIT trap runs it again and
+    # every step tolerates what is already gone. The child picks its own
+    # branch and worktree names ($$), which the parent's cleanup never names.
+    cleanup
+    git -C "$WIKI" branch -D "$BRANCH" >/dev/null 2>&1 || true
+    set +e
+    WIKI_INGEST_COLLISION_RERUN=$((reruns + 1)) "$BASH" "$SCRIPT_DIR/$(basename "$0")" ${ORIG_ARGV[@]+"${ORIG_ARGV[@]}"}
+    crc=$?
+    set -e
+    exit "$crc"
+  fi
+  echo "MERGE FAILED for $INGEST_URL: slug/title collision with peer ingests persisted through $reruns re-runs — branch $BRANCH kept for retry" >&2
+  exit 1
+elif [ "$mrc" -ne 0 ]; then
   echo "MERGE FAILED after 5 attempts for $INGEST_URL — branch $BRANCH kept for retry" >&2
   exit 1
 fi
