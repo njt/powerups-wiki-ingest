@@ -1187,5 +1187,85 @@ check "topics: --summary-only backfill without topics: gets misc" 0 $?
   - misc" ] \
   || { echo "FAIL: topics backfill plain — committed topics: is [$(topics_block topics-orphan-plain | tr '\n' '|')], stderr: $(cat "$SANDBOX/ets2")"; fail=1; }
 
+# --- push: a second writer on origin (the CI runner) -----------------------------
+# Every case above runs with no origin remote, so its push fails and it reports
+# push-failed with exit 0 — the no-origin behaviour, unchanged. From here on the
+# wiki gets a local bare repo as origin and a peer clone that pushes to it, as a
+# CI runner would, between our last sync and our ingest.
+ORIGIN="$SANDBOX/origin.git"; PEER="$SANDBOX/peer"
+git clone -q --bare "$WIKI_PATH" "$ORIGIN"
+git -C "$WIKI_PATH" remote add origin "$ORIGIN"
+git -C "$WIKI_PATH" fetch -q origin
+git clone -q "$ORIGIN" "$PEER"
+git -C "$PEER" config user.email "peer@wiki-ingest.invalid"
+git -C "$PEER" config user.name "wiki-ingest peer"
+origin_has() { git -C "$ORIGIN" log --format=%s main | grep -qxF "$1"; }
+
+# (i) The peer appends to log.md and index.md (the lines our ingest also appends
+# after) and adds a page, then pushes. Our push is rejected; the engine must
+# fetch, union-merge, and push both commits.
+printf -- '- peer log line\n' >> "$PEER/log.md"
+printf -- '- peer index line\n' >> "$PEER/index.md"
+printf '# Peer Page\n\nfrom the runner\n' > "$PEER/note/Peer Page.md"
+git -C "$PEER" add -A && git -C "$PEER" commit -q -m "Ingest: https://peer.example.invalid/runner"
+git -C "$PEER" push -q origin main
+URL_PS="https://example.invalid/push-sync"
+STUB_MODE=note-good \
+  "$BIN/wiki-ingest-run" --content "$SRC_T" "$URL_PS" >"$SANDBOX/ops" 2>"$SANDBOX/eps"
+check "push: a peer's commit on origin is merged and the ingest pushed" 0 $?
+grep -q "merged, pushed)" "$SANDBOX/ops" \
+  || { echo "FAIL: push sync — not reported pushed: $(cat "$SANDBOX/ops") stderr: $(cat "$SANDBOX/eps")"; fail=1; }
+origin_has "Ingest: https://peer.example.invalid/runner" && origin_has "Ingest: $URL_PS" \
+  || { echo "FAIL: push sync — origin lacks one of the two commits: $(git -C "$ORIGIN" log --format=%s -3 main | tr '\n' '|')"; fail=1; }
+[ "$(git -C "$WIKI_PATH" rev-parse main)" = "$(git -C "$ORIGIN" rev-parse main)" ] \
+  || { echo "FAIL: push sync — local main and origin main differ"; fail=1; }
+for f in log.md index.md; do
+  git -C "$ORIGIN" show "main:$f" | grep -q "^- peer ${f%.md} line\$" \
+    && git -C "$ORIGIN" show "main:$f" | grep -qF "$URL_PS" \
+    || { echo "FAIL: push sync — origin $f lacks the peer's line or ours"; fail=1; }
+done
+no_markers || { echo "FAIL: push sync — conflict markers on main"; fail=1; }
+
+# (ii) A conflict origin cannot union away: the same line of one page, changed
+# both on this clone (an unpushed local commit, e.g. an Obsidian edit) and by
+# the peer. The engine must abort its catch-up merge, keep the local ingest
+# commit, and report push-failed — exit 0 by default, exit 5 when strict.
+git -C "$PEER" pull -q --no-rebase origin main
+printf 'shared line\n' > "$PEER/note/Contested.md"
+git -C "$PEER" add -A && git -C "$PEER" commit -q -m "Seed contested page" && git -C "$PEER" push -q origin main
+git -C "$WIKI_PATH" pull -q --no-rebase origin main
+printf 'mac version\n' > "$WIKI_PATH/note/Contested.md"
+git -C "$WIKI_PATH" commit -q -am "Local edit to contested page"
+printf 'runner version\n' > "$PEER/note/Contested.md"
+git -C "$PEER" commit -q -am "Runner edit to contested page" && git -C "$PEER" push -q origin main
+origin_before=$(git -C "$ORIGIN" rev-parse main)
+URL_PC2="https://example.invalid/push-conflict"
+STUB_MODE=note-good \
+  "$BIN/wiki-ingest-run" --content "$SRC_T" "$URL_PC2" >"$SANDBOX/opc" 2>"$SANDBOX/epc2"
+check "push: an unresolvable conflict with origin keeps the commit, exit 0" 0 $?
+grep -q "merged, push-failed)" "$SANDBOX/opc" \
+  || { echo "FAIL: push conflict — not reported push-failed: $(cat "$SANDBOX/opc") stderr: $(cat "$SANDBOX/epc2")"; fail=1; }
+grep -q "conflicts with main on: note/Contested.md" "$SANDBOX/epc2" \
+  || { echo "FAIL: push conflict — stderr does not name the conflict: $(cat "$SANDBOX/epc2")"; fail=1; }
+[ "$(git -C "$ORIGIN" rev-parse main)" = "$origin_before" ] \
+  || { echo "FAIL: push conflict — origin main moved"; fail=1; }
+[ "$(head_subject)" = "Ingest: $URL_PC2" ] \
+  || { echo "FAIL: push conflict — local main HEAD is '$(head_subject)', not the ingest commit"; fail=1; }
+[ "$(cat "$WIKI_PATH/note/Contested.md")" = "mac version" ] \
+  || { echo "FAIL: push conflict — local contested page changed: $(cat "$WIKI_PATH/note/Contested.md")"; fail=1; }
+git -C "$WIKI_PATH" rev-parse -q --verify MERGE_HEAD >/dev/null \
+  && { echo "FAIL: push conflict — a merge was left in progress"; fail=1; }
+[ -z "$(git -C "$WIKI_PATH" status --porcelain)" ] \
+  || { echo "FAIL: push conflict — working tree left dirty: $(git -C "$WIKI_PATH" status --porcelain | tr '\n' '|')"; fail=1; }
+
+URL_PC3="https://example.invalid/push-conflict-strict"
+WIKI_INGEST_REQUIRE_PUSH=1 STUB_MODE=note-good \
+  "$BIN/wiki-ingest-run" --content "$SRC_T" "$URL_PC3" >"$SANDBOX/opc3" 2>"$SANDBOX/epc3"
+check "push: WIKI_INGEST_REQUIRE_PUSH=1 makes push-failed exit 5" 5 $?
+grep -q "merged, push-failed)" "$SANDBOX/opc3" \
+  || { echo "FAIL: push strict — not reported push-failed: $(cat "$SANDBOX/opc3")"; fail=1; }
+[ "$(head_subject)" = "Ingest: $URL_PC3" ] \
+  || { echo "FAIL: push strict — local main HEAD is '$(head_subject)'"; fail=1; }
+
 [ "$fail" = 0 ] && echo "test-guard: ALL PASS"
 exit $fail

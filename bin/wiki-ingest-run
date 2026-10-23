@@ -64,6 +64,12 @@
 #   0  ingested (or dry-run OK, or summary backfilled)
 #   2  duplicate — already ingested (use --force to re-ingest)
 #   3  no changes — fetch likely failed (orchestrator should retry with surf)
+#   5  merged into the local main but not pushed to origin, with
+#      WIKI_INGEST_REQUIRE_PUSH=1 (for a throwaway clone, e.g. CI). Without it
+#      a failed push is still exit 0, reported as push-failed. A rejected push
+#      is first retried after fetching origin/main and merging it into main
+#      (3 pushes); a conflict with origin aborts that merge and keeps the
+#      local commit.
 #   64 usage error
 #   1  other failure — including, for --summary-only, a missing raw/<slug>.md,
 #      an LLM that wrote nothing, or one that wrote outside summary/; for an
@@ -1675,7 +1681,53 @@ elif [ "$mrc" -ne 0 ]; then
   exit 1
 fi
 
-if git -C "$WIKI" push origin main --quiet 2>/dev/null; then
+# Push, catching up with origin when another writer got there first. The wiki
+# has more than one writer (this Mac's clone and a CI runner's fresh clone), so
+# a rejected push usually means origin/main moved on: fetch it, merge it into
+# main (index.md and log.md are merge=union, so concurrent appends merge clean),
+# and push again — up to 3 pushes. Without this the runner loses its ingest and
+# the Mac diverges from origin, after which every later push fails too.
+# The merge runs on the live checkout under the same rules as the branch merge
+# above: nothing is done to a dirty tree beyond what `git merge` itself allows,
+# and only a merge that is OURS (MERGE_HEAD = the origin commit we asked for) is
+# ever aborted. A content conflict with origin is aborted at once and the local
+# commit stays on main, unpushed: push-failed, as before. No origin remote, a
+# failed fetch, or a rejection that is not about history (origin/main already
+# in main) all stop at the first failed push, exactly as the old single push.
+push_with_sync() {
+  local attempt=1 theirs
+  while :; do
+    if git -C "$WIKI" push origin main --quiet 2>/dev/null; then
+      return 0
+    fi
+    [ "$attempt" -lt 3 ] || return 1
+    attempt=$((attempt + 1))
+    git -C "$WIKI" remote get-url origin >/dev/null 2>&1 || return 1
+    # Explicit refspec: a CI checkout may carry a narrowed fetch config, and
+    # the bare `fetch origin main` then updates only FETCH_HEAD.
+    git -C "$WIKI" fetch --quiet origin "+refs/heads/main:refs/remotes/origin/main" 2>/dev/null || return 1
+    theirs=$(git -C "$WIKI" rev-parse -q --verify "refs/remotes/origin/main^{commit}" 2>/dev/null) || return 1
+    if git -C "$WIKI" merge-base --is-ancestor "$theirs" main 2>/dev/null; then
+      return 1   # nothing to catch up on: the rejection was not a race
+    fi
+    # The sha, not the ref: a parallel ingest's fetch may move origin/main
+    # under us, and MERGE_HEAD is compared against exactly what we merged.
+    echo "wiki-ingest-run: push rejected — merging origin/main ($theirs) into main and retrying" >&2
+    if git -C "$WIKI" merge "$theirs" --no-edit -m "Merge origin/main into main before push" >/dev/null 2>&1; then
+      continue
+    fi
+    if [ "$(git -C "$WIKI" rev-parse -q --verify MERGE_HEAD 2>/dev/null)" = "$theirs" ]; then
+      echo "wiki-ingest-run: origin/main conflicts with main on: $(git -C "$WIKI" -c core.quotePath=false diff --name-only --diff-filter=U 2>/dev/null | tr '\n' ' ')— merge aborted, local commit kept unpushed" >&2
+      git -C "$WIKI" merge --abort 2>/dev/null || true
+      return 1
+    fi
+    # The merge never started (a peer ingest holds index.lock, or a local edit
+    # is in the way): wait, as merge_with_retry does, and spend an attempt.
+    sleep 3
+  done
+}
+
+if push_with_sync; then
   PUSH_STATUS="pushed"
 else
   PUSH_STATUS="push-failed"
@@ -1685,5 +1737,13 @@ if [ "$SUMMARY_ONLY" -eq 1 ]; then
   echo "SUMMARY BACKFILLED: summary/$SLUG.md (branch $BRANCH, merged, $PUSH_STATUS)"
 else
   echo "INGESTED: $INGEST_URL (branch $BRANCH, merged, $PUSH_STATUS)"
+fi
+# Strict mode for a writer with nowhere else to keep its commit (a CI runner's
+# throwaway clone): an unpushed ingest is a lost ingest, so say so in the exit
+# code. Off by default — the Mac's launchd job keeps the commit locally and
+# relies on exit 0.
+if [ "$PUSH_STATUS" = "push-failed" ] && [ "${WIKI_INGEST_REQUIRE_PUSH:-0}" = 1 ]; then
+  echo "wiki-ingest-run: WIKI_INGEST_REQUIRE_PUSH=1 and the push failed — exit 5" >&2
+  exit 5
 fi
 # trap removes the worktree and the (now merged) branch
