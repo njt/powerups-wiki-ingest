@@ -212,8 +212,7 @@ expect_out "topics: TSV in file order, columns reordered to slug/title/scope, \\
 n=$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(len(d), d[1]["slug"], d[2]["title"])' "$SANDBOX/topics.json")
 expect_out "topics --json: three rows, in order, with the right keys" "3 erdos Miscellany" "$n"
 
-mkdir -p "$SANDBOX/other"; cp "$W/topics.md" "$SANDBOX/other/topics.md"
-sed -i '' 's/^| Miscellany /| Other Misc /' "$SANDBOX/other/topics.md"
+mkdir -p "$SANDBOX/other"; sed 's/^| Miscellany /| Other Misc /' "$W/topics.md" > "$SANDBOX/other/topics.md"
 out=$(WIKI_PATH="$W" "$META" topics --wiki "$SANDBOX/other" | tail -1 | cut -f2)
 expect_out "topics: --wiki overrides WIKI_PATH" "Other Misc" "$out"
 
