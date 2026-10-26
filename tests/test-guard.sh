@@ -1210,9 +1210,13 @@ printf '# Peer Page\n\nfrom the runner\n' > "$PEER/note/Peer Page.md"
 git -C "$PEER" add -A && git -C "$PEER" commit -q -m "Ingest: https://peer.example.invalid/runner"
 git -C "$PEER" push -q origin main
 URL_PS="https://example.invalid/push-sync"
-STUB_MODE=note-good \
+# WIKI_INGEST_NO_SYNC=1: the start-of-ingest catch-up would otherwise merge the
+# peer's commit before the push, and this case would stop testing the push path.
+WIKI_INGEST_NO_SYNC=1 STUB_MODE=note-good \
   "$BIN/wiki-ingest-run" --content "$SRC_T" "$URL_PS" >"$SANDBOX/ops" 2>"$SANDBOX/eps"
 check "push: a peer's commit on origin is merged and the ingest pushed" 0 $?
+grep -q "push rejected — merging origin/main" "$SANDBOX/eps" \
+  || { echo "FAIL: push sync — the push was never rejected, so the push path went untested: $(cat "$SANDBOX/eps")"; fail=1; }
 grep -q "merged, pushed)" "$SANDBOX/ops" \
   || { echo "FAIL: push sync — not reported pushed: $(cat "$SANDBOX/ops") stderr: $(cat "$SANDBOX/eps")"; fail=1; }
 origin_has "Ingest: https://peer.example.invalid/runner" && origin_has "Ingest: $URL_PS" \
@@ -1266,6 +1270,100 @@ grep -q "merged, push-failed)" "$SANDBOX/opc3" \
   || { echo "FAIL: push strict — not reported push-failed: $(cat "$SANDBOX/opc3")"; fail=1; }
 [ "$(head_subject)" = "Ingest: $URL_PC3" ] \
   || { echo "FAIL: push strict — local main HEAD is '$(head_subject)'"; fail=1; }
+
+# --- catch-up: main meets origin/main BEFORE the dup-check ----------------------
+# Until now the Mac only caught up when its own push was rejected, so a URL the
+# CI runner had ingested looked new to the dup-check and was ingested twice.
+# Reconcile the clones first: the conflict cases above left local main and
+# origin diverged on note/Contested.md, which would make every catch-up below
+# conflict and test nothing else.
+git -C "$WIKI_PATH" pull -q --no-rebase -X ours origin main >/dev/null 2>&1 \
+  && git -C "$WIKI_PATH" push -q origin main \
+  && git -C "$PEER" pull -q --no-rebase origin main \
+  || { echo "FAIL: catch-up — could not reconcile the clones before the catch-up cases"; fail=1; }
+# peer_ingests <url> <slug> — the runner ingests <url> and pushes: raw/ and
+# summary/ pages carrying its url:, which is all the dup-check reads.
+peer_ingests() {
+  printf -- '---\nurl: %s\ntitle: Cloud\n---\n\ncloud body\n' "$1" > "$PEER/raw/$2.md"
+  printf -- '---\nurl: %s\ntopics:\n  - alpha\n---\n\ncloud precis\n' "$1" > "$PEER/summary/$2.md"
+  git -C "$PEER" add -A && git -C "$PEER" commit -q -m "Ingest: $1" && git -C "$PEER" push -q origin main
+}
+
+# (i) The runner ingested X and pushed; this clone has not pushed since, so no
+# push was ever rejected. A local ingest of X must catch up first and find the
+# duplicate. A tracked file with an uncommitted (Obsidian) edit is in the tree:
+# the catch-up fast-forwards over it and leaves it alone.
+URL_CU="https://example.invalid/cloud-ingested"
+peer_ingests "$URL_CU" cloud-ingested
+PEER_CU=$(git -C "$PEER" rev-parse main)
+printf '# Peer Page\n\nedited in Obsidian, not yet committed\n' > "$WIKI_PATH/note/Peer Page.md"
+STUB_MODE=note-good \
+  "$BIN/wiki-ingest-run" --content "$SRC_T" "$URL_CU" >"$SANDBOX/ocu" 2>"$SANDBOX/ecu"
+check "catch-up: a URL the runner already ingested is a local duplicate" 2 $?
+grep -q "^DUPLICATE" "$SANDBOX/ocu" \
+  || { echo "FAIL: catch-up — not reported DUPLICATE: $(cat "$SANDBOX/ocu") stderr: $(cat "$SANDBOX/ecu")"; fail=1; }
+git -C "$WIKI_PATH" merge-base --is-ancestor "$PEER_CU" main \
+  || { echo "FAIL: catch-up — local main lacks the runner's commit, stderr: $(cat "$SANDBOX/ecu")"; fail=1; }
+grep -q "not yet committed" "$WIKI_PATH/note/Peer Page.md" \
+  || { echo "FAIL: catch-up — the uncommitted local edit was lost"; fail=1; }
+git -C "$WIKI_PATH" checkout -q -- "note/Peer Page.md"
+
+# (iv) The same setup with WIKI_INGEST_NO_SYNC=1: no catch-up, so the local
+# dup-check cannot see the runner's ingest and X is ingested anew (the opt-out
+# really opts out). The runner's files carry another slug, so the push path's
+# own catch-up merges clean and the ingest is pushed.
+URL_NS="https://example.invalid/cloud-ingested-nosync"
+peer_ingests "$URL_NS" runner-copy-nosync
+STUB_MODE=note-good WIKI_INGEST_NO_SYNC=1 \
+  "$BIN/wiki-ingest-run" --content "$SRC_T" "$URL_NS" >"$SANDBOX/ons" 2>"$SANDBOX/ens"
+check "catch-up: WIKI_INGEST_NO_SYNC=1 skips it, so the URL is ingested anew" 0 $?
+grep -q "^INGESTED: $URL_NS" "$SANDBOX/ons" \
+  || { echo "FAIL: no-sync — not ingested: $(cat "$SANDBOX/ons") stderr: $(cat "$SANDBOX/ens")"; fail=1; }
+grep -q "caught up with origin/main" "$SANDBOX/ens" \
+  && { echo "FAIL: no-sync — the catch-up ran anyway"; fail=1; }
+
+# (ii) Origin unreachable (offline, or a broken URL): one warning line and the
+# ingest proceeds on local main; the push fails too, which is exit 0 as before.
+git -C "$PEER" pull -q --no-rebase origin main
+GOOD_ORIGIN=$(git -C "$WIKI_PATH" remote get-url origin)
+git -C "$WIKI_PATH" remote set-url origin "$SANDBOX/no-such-origin.git"
+URL_OFF="https://example.invalid/catch-up-offline"
+STUB_MODE=note-good \
+  "$BIN/wiki-ingest-run" --content "$SRC_T" "$URL_OFF" >"$SANDBOX/ooff" 2>"$SANDBOX/eoff"
+check "catch-up: an unreachable origin warns and the ingest still succeeds" 0 $?
+grep -q "not catching up with origin/main: fetch from origin failed" "$SANDBOX/eoff" \
+  || { echo "FAIL: offline — no catch-up warning: $(cat "$SANDBOX/eoff")"; fail=1; }
+[ "$(head_subject)" = "Ingest: $URL_OFF" ] \
+  || { echo "FAIL: offline — local main HEAD is '$(head_subject)'"; fail=1; }
+git -C "$WIKI_PATH" remote set-url origin "$GOOD_ORIGIN"
+git -C "$WIKI_PATH" push -q origin main && git -C "$PEER" pull -q --no-rebase origin main \
+  || { echo "FAIL: offline — could not re-sync the clones afterwards"; fail=1; }
+
+# (iii) Origin conflicts with an unpushed local commit (clean tree): the
+# catch-up merge is aborted — ours, so no MERGE_HEAD is left — and the ingest
+# proceeds on local main. The push then hits the same conflict, as before.
+printf 'shared line\n' > "$PEER/note/Contested Again.md"
+git -C "$PEER" add -A && git -C "$PEER" commit -q -m "Seed second contested page" && git -C "$PEER" push -q origin main
+git -C "$WIKI_PATH" pull -q --no-rebase origin main
+printf 'mac version\n' > "$WIKI_PATH/note/Contested Again.md"
+git -C "$WIKI_PATH" commit -q -am "Local edit to second contested page"
+printf 'runner version\n' > "$PEER/note/Contested Again.md"
+git -C "$PEER" commit -q -am "Runner edit to second contested page" && git -C "$PEER" push -q origin main
+URL_CC="https://example.invalid/catch-up-conflict"
+STUB_MODE=note-good \
+  "$BIN/wiki-ingest-run" --content "$SRC_T" "$URL_CC" >"$SANDBOX/occ" 2>"$SANDBOX/ecc"
+check "catch-up: a conflict with origin is aborted and the ingest proceeds" 0 $?
+grep -q "not catching up with origin/main: origin/main conflicts with main on: note/Contested Again.md — merge aborted" "$SANDBOX/ecc" \
+  || { echo "FAIL: catch-up conflict — no abort warning naming the path: $(cat "$SANDBOX/ecc")"; fail=1; }
+[ "$(head_subject)" = "Ingest: $URL_CC" ] \
+  || { echo "FAIL: catch-up conflict — local main HEAD is '$(head_subject)'"; fail=1; }
+[ "$(cat "$WIKI_PATH/note/Contested Again.md")" = "mac version" ] \
+  || { echo "FAIL: catch-up conflict — local page changed: $(cat "$WIKI_PATH/note/Contested Again.md")"; fail=1; }
+git -C "$WIKI_PATH" rev-parse -q --verify MERGE_HEAD >/dev/null \
+  && { echo "FAIL: catch-up conflict — a merge was left in progress"; fail=1; }
+[ -z "$(git -C "$WIKI_PATH" status --porcelain)" ] \
+  || { echo "FAIL: catch-up conflict — working tree left dirty: $(git -C "$WIKI_PATH" status --porcelain | tr '\n' '|')"; fail=1; }
+no_markers || { echo "FAIL: catch-up conflict — conflict markers on main"; fail=1; }
 
 [ "$fail" = 0 ] && echo "test-guard: ALL PASS"
 exit $fail

@@ -23,6 +23,16 @@
 # re-runs (WIKI_INGEST_COLLISION_RERUN counts them), so a third racing peer is
 # still absorbed; after that it is exit 1 with the branch kept.
 #
+# The wiki has a second writer (a CI runner ingesting into a fresh clone), so
+# before anything reads the checkout the script catches main up with origin/main
+# (sync_with_origin): fetch, and merge origin's commit in if main lacks it, so
+# the dup-check sees URLs the other writer already ingested and the worktree is
+# cut from current main. It is never fatal — no origin, offline, a conflict
+# (our merge aborted), a merge that will not start, or a git operation already
+# in progress: one line on stderr and the ingest runs on local main. Skipped for
+# --dry-run, in a collision re-run, and with WIKI_INGEST_NO_SYNC=1. A rejected
+# push catches up the same way (push_with_sync).
+#
 # Two modes, chosen by whether topics.md exists in the wiki (the gate is the
 # file, not a flag, because the hourly job runs this script from the working
 # tree and a wiki must switch over at exactly the commit that lands topics.md):
@@ -131,6 +141,109 @@ if [ "$WIKI_HEAD" != "main" ]; then
   echo "wiki-ingest-run: wiki checkout is on '$WIKI_HEAD', not main — refusing to ingest" >&2
   exit 1
 fi
+
+# --- Catching up with origin/main ----------------------------------------------
+# The wiki has more than one writer (this Mac's clone and a CI runner's fresh
+# clone), so origin/main moves on without us. Two places merge it into the live
+# checkout: sync_with_origin at the start of an ingest, and push_with_sync after
+# a rejected push. Both use the helpers below, under one set of rules: merge the
+# fetched SHA (not the ref, which a parallel ingest's fetch may move under us);
+# abort only a merge whose MERGE_HEAD is exactly that SHA (a failed `git merge`
+# may be a PEER's merge in progress, and aborting that loses its ingest — see
+# merge_with_retry); and treat a merge that never started (index.lock, a local
+# edit in the way) as retryable, not as a conflict.
+
+# The git operations that leave the checkout mid-flight, space-separated (empty
+# when none). --absolute-git-dir, not --git-dir: the latter is relative to this
+# script's cwd, and the check silently never fires.
+inprogress_ops() {
+  local gd st ops=""
+  gd=$(git -C "$WIKI" rev-parse --absolute-git-dir 2>/dev/null || true)
+  [ -n "$gd" ] || return 0
+  for st in MERGE_HEAD CHERRY_PICK_HEAD REVERT_HEAD rebase-merge rebase-apply sequencer; do
+    if [ -e "$gd/$st" ]; then ops="$ops $st"; fi
+  done
+  printf '%s' "$ops"
+}
+
+# Fetch origin's main. 0 with ORIGIN_SHA set; 1 with SYNC_WHY saying why not.
+# Explicit refspec: a CI checkout may carry a narrowed fetch config, and the
+# bare `fetch origin main` then updates only FETCH_HEAD.
+ORIGIN_SHA=""
+SYNC_WHY=""
+fetch_origin_main() {
+  ORIGIN_SHA=""
+  if ! git -C "$WIKI" remote get-url origin >/dev/null 2>&1; then
+    SYNC_WHY="no origin remote"; return 1
+  fi
+  if ! GIT_TERMINAL_PROMPT=0 git -C "$WIKI" fetch --quiet origin "+refs/heads/main:refs/remotes/origin/main" 2>/dev/null; then
+    SYNC_WHY="fetch from origin failed"; return 1
+  fi
+  if ! ORIGIN_SHA=$(git -C "$WIKI" rev-parse -q --verify "refs/remotes/origin/main^{commit}" 2>/dev/null); then
+    ORIGIN_SHA=""; SYNC_WHY="origin has no main branch"; return 1
+  fi
+  return 0
+}
+
+# merge_origin_sha <message> [ff-only] — merge ORIGIN_SHA into main, once.
+# 0 merged; 2 a content conflict, our merge aborted (SYNC_WHY names the paths);
+# 3 the merge never started, nothing to abort — the caller may wait and retry.
+merge_origin_sha() {
+  local msg="$1" ok=1 paths
+  if [ "${2:-}" = ff-only ]; then
+    git -C "$WIKI" merge --ff-only "$ORIGIN_SHA" >/dev/null 2>&1 && ok=0
+  else
+    git -C "$WIKI" merge "$ORIGIN_SHA" --no-edit -m "$msg" >/dev/null 2>&1 && ok=0
+  fi
+  [ "$ok" -eq 0 ] && return 0
+  if [ "$(git -C "$WIKI" rev-parse -q --verify MERGE_HEAD 2>/dev/null)" = "$ORIGIN_SHA" ]; then
+    paths=$(git -C "$WIKI" -c core.quotePath=false diff --name-only --diff-filter=U 2>/dev/null | tr '\n' ' ')
+    SYNC_WHY="origin/main conflicts with main on: ${paths% }"
+    git -C "$WIKI" merge --abort 2>/dev/null || true
+    return 2
+  fi
+  return 3
+}
+
+# Catch main up with origin/main before the dup-check and the worktree, so a
+# URL another writer already ingested is seen as a duplicate and the worktree
+# is cut from current main. Never fatal: whatever goes wrong, one line on
+# stderr and the ingest proceeds on local main exactly as it would have.
+# A tree with uncommitted tracked edits (Obsidian) is only ever fast-forwarded:
+# a fast-forward cannot conflict, so nothing is aborted over those edits; a
+# diverged main with a dirty tree is left for push_with_sync, which runs after
+# the auto-commit.
+sync_with_origin() {
+  local ops mrc tries=1 mode=""
+  ops=$(inprogress_ops)
+  if [ -n "$ops" ]; then
+    echo "wiki-ingest-run: not catching up with origin/main: a git operation is in progress ($ops)" >&2
+    return 0
+  fi
+  if ! fetch_origin_main; then
+    echo "wiki-ingest-run: not catching up with origin/main: $SYNC_WHY — ingesting on local main" >&2
+    return 0
+  fi
+  git -C "$WIKI" merge-base --is-ancestor "$ORIGIN_SHA" main 2>/dev/null && return 0
+  if ! git -C "$WIKI" diff --quiet HEAD -- 2>/dev/null; then
+    if ! git -C "$WIKI" merge-base --is-ancestor main "$ORIGIN_SHA" 2>/dev/null; then
+      echo "wiki-ingest-run: not catching up with origin/main: main has diverged and the tree has uncommitted edits — left to the push" >&2
+      return 0
+    fi
+    mode=ff-only
+  fi
+  while [ "$tries" -le 3 ]; do
+    merge_origin_sha "Merge origin/main into main before ingest" $mode && mrc=0 || mrc=$?
+    case "$mrc" in
+      0) echo "wiki-ingest-run: caught up with origin/main ($ORIGIN_SHA)" >&2; return 0 ;;
+      2) echo "wiki-ingest-run: not catching up with origin/main: $SYNC_WHY — merge aborted, ingesting on local main" >&2; return 0 ;;
+    esac
+    sleep 1
+    tries=$((tries + 1))
+  done
+  echo "wiki-ingest-run: not catching up with origin/main: the merge would not start (index.lock or a local edit in the way) — ingesting on local main" >&2
+  return 0
+}
 
 usage() {
   echo "usage: wiki-ingest-run [--repo] [--content FILE] [--force] [--note TEXT] [--date YYYY-MM-DD] [--dry-run] [--verbatim-only] <url>" >&2
@@ -343,14 +456,29 @@ fi
 
 # --- --summary-only: resolve the slug and prove the source exists -------------
 
-SUMMARY_SLUG=""
+# Backfill reads an existing archive; fetching, cloning, dry-run plumbing and
+# the verbatim verdict pass all belong to a fresh ingest. Checked before the
+# catch-up below, so a usage error never touches the checkout.
 if [ "$SUMMARY_ONLY" -eq 1 ]; then
-  # Backfill reads an existing archive; fetching, cloning, dry-run plumbing and
-  # the verbatim verdict pass all belong to a fresh ingest.
   if [ "$REPO_MODE" -eq 1 ] || [ -n "$CONTENT_FILE" ] || [ "$DRY_RUN" -eq 1 ] || [ "$VERBATIM_ONLY" -eq 1 ]; then
     echo "wiki-ingest-run: --summary-only cannot be combined with --repo, --content, --dry-run or --verbatim-only" >&2
     exit 64
   fi
+fi
+
+# --- Catch up with origin/main ----------------------------------------------
+# Before anything reads the checkout: --summary-only's slug resolution, the
+# dup-check and the worktree all look at local main. Skipped for --dry-run
+# (which must leave no trace, and never touches main), in a collision re-run
+# (its parent caught up seconds ago, and the peer it collided with is local),
+# and with WIKI_INGEST_NO_SYNC=1.
+if [ "$DRY_RUN" -ne 1 ] && [ "${WIKI_INGEST_NO_SYNC:-0}" != 1 ] \
+   && [ "${WIKI_INGEST_COLLISION_RERUN:-0}" = 0 ]; then
+  sync_with_origin
+fi
+
+SUMMARY_SLUG=""
+if [ "$SUMMARY_ONLY" -eq 1 ]; then
   # Slugs are [a-z0-9-] by construction (see url_slug); anything else is a URL.
   # A URL is resolved to the archive that actually HOLDS it, not to whatever
   # url_slug derives: once slugs can carry a collision suffix, the derived name
@@ -1594,13 +1722,7 @@ fi
 # concludes someone else's merge with their unresolved tree in it (kata cntt).
 # Exit rather than skip: skipping leaves MERGE_HEAD set, and merge_with_retry's
 # `git merge --abort` would then destroy the captain's hand-resolution.
-# --absolute-git-dir, not --git-dir: the latter returns a RELATIVE path that
-# resolves against this script's cwd, so the test silently never fires.
-GITDIR=$(git -C "$WIKI" rev-parse --absolute-git-dir 2>/dev/null || true)
-INPROGRESS=""
-for st in MERGE_HEAD CHERRY_PICK_HEAD REVERT_HEAD rebase-merge rebase-apply sequencer; do
-  if [ -n "$GITDIR" ] && [ -e "$GITDIR/$st" ]; then INPROGRESS="$INPROGRESS $st"; fi
-done
+INPROGRESS=$(inprogress_ops)
 if [ -n "$INPROGRESS" ]; then
   echo "wiki-ingest-run: $WIKI has a git operation in progress ($INPROGRESS) — refusing to auto-commit" >&2
   echo "wiki-ingest-run: finish or abort it, then re-run. Branch $BRANCH kept for retry." >&2
@@ -1681,48 +1803,35 @@ elif [ "$mrc" -ne 0 ]; then
   exit 1
 fi
 
-# Push, catching up with origin when another writer got there first. The wiki
-# has more than one writer (this Mac's clone and a CI runner's fresh clone), so
-# a rejected push usually means origin/main moved on: fetch it, merge it into
-# main (index.md and log.md are merge=union, so concurrent appends merge clean),
-# and push again — up to 3 pushes. Without this the runner loses its ingest and
-# the Mac diverges from origin, after which every later push fails too.
-# The merge runs on the live checkout under the same rules as the branch merge
-# above: nothing is done to a dirty tree beyond what `git merge` itself allows,
-# and only a merge that is OURS (MERGE_HEAD = the origin commit we asked for) is
-# ever aborted. A content conflict with origin is aborted at once and the local
-# commit stays on main, unpushed: push-failed, as before. No origin remote, a
-# failed fetch, or a rejection that is not about history (origin/main already
-# in main) all stop at the first failed push, exactly as the old single push.
+# Push, catching up with origin when another writer got there first: a
+# rejected push usually means origin/main moved on since sync_with_origin (or a
+# CI clone raced another runner). Fetch it, merge it into main (index.md and
+# log.md are merge=union, so concurrent appends merge clean), and push again —
+# up to 3 pushes. The merge follows the shared rules above. A content conflict
+# with origin is aborted at once and the local commit stays on main, unpushed:
+# push-failed. No origin remote, a failed fetch, or a rejection that is not
+# about history (origin/main already in main) all stop at the first failed
+# push, exactly as the old single push.
 push_with_sync() {
-  local attempt=1 theirs
+  local attempt=1 mrc
   while :; do
     if git -C "$WIKI" push origin main --quiet 2>/dev/null; then
       return 0
     fi
     [ "$attempt" -lt 3 ] || return 1
     attempt=$((attempt + 1))
-    git -C "$WIKI" remote get-url origin >/dev/null 2>&1 || return 1
-    # Explicit refspec: a CI checkout may carry a narrowed fetch config, and
-    # the bare `fetch origin main` then updates only FETCH_HEAD.
-    git -C "$WIKI" fetch --quiet origin "+refs/heads/main:refs/remotes/origin/main" 2>/dev/null || return 1
-    theirs=$(git -C "$WIKI" rev-parse -q --verify "refs/remotes/origin/main^{commit}" 2>/dev/null) || return 1
-    if git -C "$WIKI" merge-base --is-ancestor "$theirs" main 2>/dev/null; then
+    fetch_origin_main || return 1
+    if git -C "$WIKI" merge-base --is-ancestor "$ORIGIN_SHA" main 2>/dev/null; then
       return 1   # nothing to catch up on: the rejection was not a race
     fi
-    # The sha, not the ref: a parallel ingest's fetch may move origin/main
-    # under us, and MERGE_HEAD is compared against exactly what we merged.
-    echo "wiki-ingest-run: push rejected — merging origin/main ($theirs) into main and retrying" >&2
-    if git -C "$WIKI" merge "$theirs" --no-edit -m "Merge origin/main into main before push" >/dev/null 2>&1; then
-      continue
-    fi
-    if [ "$(git -C "$WIKI" rev-parse -q --verify MERGE_HEAD 2>/dev/null)" = "$theirs" ]; then
-      echo "wiki-ingest-run: origin/main conflicts with main on: $(git -C "$WIKI" -c core.quotePath=false diff --name-only --diff-filter=U 2>/dev/null | tr '\n' ' ')— merge aborted, local commit kept unpushed" >&2
-      git -C "$WIKI" merge --abort 2>/dev/null || true
-      return 1
-    fi
-    # The merge never started (a peer ingest holds index.lock, or a local edit
-    # is in the way): wait, as merge_with_retry does, and spend an attempt.
+    echo "wiki-ingest-run: push rejected — merging origin/main ($ORIGIN_SHA) into main and retrying" >&2
+    merge_origin_sha "Merge origin/main into main before push" && mrc=0 || mrc=$?
+    case "$mrc" in
+      0) continue ;;
+      2) echo "wiki-ingest-run: $SYNC_WHY — merge aborted, local commit kept unpushed" >&2
+         return 1 ;;
+    esac
+    # The merge never started: wait, as merge_with_retry does, and spend an attempt.
     sleep 3
   done
 }
