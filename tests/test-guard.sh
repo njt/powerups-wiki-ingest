@@ -241,6 +241,20 @@ case "${STUB_MODE:-nothing}" in
     write_note "$title"
     NOTE_TITLE="$title" note_index_log
     ;;
+  # The agent's index.md and log.md edits with the newline missing — the two
+  # shapes seen in the real wiki (2026-11-03). Index: the entry inserted in
+  # front of an existing entry, so the two share a line (the Cantrill ingest).
+  # Log: the line appended to a file whose last line had lost its newline, so
+  # it runs onto the previous entry (the Duncan Davidson ingest).
+  note-glued)
+    s=$(prompt_slug); url=$(sed -n 's/^url: //p' "raw/$s.md" | head -1)
+    write_topics_summary 'topics:' '  - alpha'
+    write_note "${NOTE_TITLE:-Note $s}"
+    GLUE="- [[${NOTE_TITLE:-Note $s}]] — glued entry for $url" perl -0pi -e \
+      's/^(- \[\[)/$ENV{GLUE}$1/m' index.md
+    perl -0pi -e 's/\n\z//' log.md
+    printf -- '- 2026-11-04: Ingested glued %s -> raw/%s.md\n' "$url" "$s" >> log.md
+    ;;
   summary-topics-flow)
     # --summary-only in topics mode: summary/ only, topics: in flow form.
     s=$(prompt_slug); url=$(sed -n 's/^url: //p' "raw/$s.md" | head -1)
@@ -1032,6 +1046,31 @@ check "topics: an unknown slug is repaired to misc, not rejected" 0 $?
   || { echo "FAIL: topics bad — committed topics: is [$(topics_block topics-bad | tr '\n' '|')]"; fail=1; }
 grep -q "dropped topic 'nonesuch'" "$SANDBOX/etb" \
   || { echo "FAIL: topics bad — the drop is not reported on stderr: $(cat "$SANDBOX/etb")"; fail=1; }
+
+# --- topics: an index/log bullet glued onto its neighbour is split -----------
+# The agent sometimes drops the newline between its new bullet and an existing
+# one; the two then share a line and one of them vanishes from Obsidian's list.
+# Only lines this ingest added are split — committed lines are left as they are.
+URL_GL="https://example.invalid/topics-glued"
+NOTE_GL="Glued Note"
+idx_before=$(git -C "$WIKI_PATH" show main:index.md)
+log_last=$(git -C "$WIKI_PATH" show main:log.md | tail -1)
+STUB_MODE=note-glued NOTE_TITLE="$NOTE_GL" \
+  "$BIN/wiki-ingest-run" --content "$SRC_T" "$URL_GL" >/dev/null 2>"$SANDBOX/egl"
+check "topics: a glued index/log bullet is repaired, not rejected" 0 $?
+[ "$(head_subject)" = "Ingest: $URL_GL (glued bullets split in index.md, log.md)" ] \
+  || { echo "FAIL: glued — HEAD is '$(head_subject)', stderr: $(cat "$SANDBOX/egl")"; fail=1; }
+idx_after=$(git -C "$WIKI_PATH" show main:index.md)
+printf '%s\n' "$idx_after" | grep -qxF -- "- [[$NOTE_GL]] — glued entry for $URL_GL" \
+  || { echo "FAIL: glued — the new index entry is not on a line of its own"; fail=1; }
+[ "$(printf '%s\n' "$idx_after" | grep -vxF -- "- [[$NOTE_GL]] — glued entry for $URL_GL")" = "$idx_before" ] \
+  || { echo "FAIL: glued — index.md is not the old index plus one line: $(diff <(printf '%s\n' "$idx_before") <(printf '%s\n' "$idx_after") | tr '\n' '|')"; fail=1; }
+git -C "$WIKI_PATH" show main:log.md | grep -qxF -- "$log_last" \
+  || { echo "FAIL: glued — the previous last log line is no longer whole"; fail=1; }
+git -C "$WIKI_PATH" show main:log.md | grep -qxF -- "- 2026-11-04: Ingested glued $URL_GL -> raw/topics-glued.md" \
+  || { echo "FAIL: glued — the new log line is not on a line of its own"; fail=1; }
+grep -q "split a bullet glued onto its neighbour in index.md" "$SANDBOX/egl" \
+  || { echo "FAIL: glued — the repair is not reported on stderr: $(cat "$SANDBOX/egl")"; fail=1; }
 
 # --- topics: any write under topic/ is rejected ------------------------------
 before=$(head_subject)

@@ -1733,6 +1733,54 @@ if [ "${VERBATIM_ONLY:-0}" -ne 1 ] && [ "$SUMMARY_ONLY" -ne 1 ]; then
     normalize_topics
   fi
 fi
+# Split a bullet the agent glued onto its neighbour in index.md or log.md. It
+# edits those files itself and sometimes drops the newline between its entry
+# and an existing one — inserted in front of the next entry, or appended to a
+# file whose last line had lost its newline — so two entries share one line
+# and Obsidian shows one of them as tail text of the other (three times on
+# 2026-11-03). Only lines absent from HEAD are touched: committed history is
+# not this ingest's to rewrite. A split needs a non-space directly before the
+# "- " so a " - [[X]] — " inside an entry's own prose is left alone. A repair,
+# not a rejection, like normalize_topics: the ingest is otherwise sound.
+repair_glued_bullets() {
+  local f rc split=""
+  for f in index.md log.md; do
+    git -C "$WT" diff --cached --quiet -- "$f" && continue
+    set +e
+    git -C "$WT" show "HEAD:$f" 2>/dev/null | F="$WT/$f" python3 -c '
+import os, re, sys
+glue = {"index.md": r"(?<=\S)(?=- \[\[[^\]\n]+\]\] — )",
+        "log.md": r"(?<=\S)(?=- \d{4}-\d{2}-\d{2}: )"}[os.path.basename(os.environ["F"])]
+old = set(sys.stdin.read().split("\n"))
+p = os.environ["F"]
+text = open(p, encoding="utf-8").read()
+out, n = [], 0
+for line in text.split("\n"):
+    parts = re.split(glue, line) if line.startswith("- ") and line not in old else [line]
+    n += len(parts) - 1
+    out += parts
+if n == 0:
+    sys.exit(0)
+open(p, "w", encoding="utf-8").write("\n".join(out))
+sys.exit(1)
+'
+    rc=$?
+    set -e
+    case "$rc" in
+      0) : ;;
+      1) echo "wiki-ingest-run: split a bullet glued onto its neighbour in $f" >&2
+         git -C "$WT" add -- "$f"
+         split="${split:+$split, }$f" ;;
+      *) echo "wiki-ingest-run: could not check $f for glued bullets (rc=$rc) — refusing to commit" >&2
+         exit 1 ;;
+    esac
+  done
+  [ -z "$split" ] || COMMIT_NOTE="$COMMIT_NOTE (glued bullets split in $split)"
+}
+if [ "$SUMMARY_ONLY" -ne 1 ]; then
+  repair_glued_bullets
+fi
+
 if [ "$SUMMARY_ONLY" -eq 1 ]; then
   git -C "$WT" commit -m "Backfill summary: $SLUG$COMMIT_NOTE" --author="wiki-ingest <noreply@wiki-ingest>"
 elif [ "$REPO_MODE" -eq 1 ]; then
