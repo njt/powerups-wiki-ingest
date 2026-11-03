@@ -288,6 +288,20 @@ is_youtube_url() {
   esac
 }
 
+# is_machine_digest <file> — true when the archive is a ytx gist: an LLM-written
+# digest (summary, quotes, critique) above an automatic transcript. Recognised by
+# ytx's fixed section headings; two DIFFERENT ones of the four must appear, as
+# heading lines with optional "#"s or a "2." number (a report that merely says
+# "Key points" twice is not a digest). Nat publishes these gists from his
+# account, which led ingests to credit him with the digest's opinions.
+is_machine_digest() {
+  [ -f "$1" ] || return 1
+  local n
+  n=$(grep -i -E '^[[:space:]]*(#+[[:space:]]*)?([0-9]+\.[[:space:]]*)?(key points|pithy and provocative quotes|tools, practices,? and methodologies|unanswered questions and omissions)[[:space:]]*$' "$1" \
+      | tr 'A-Z' 'a-z' | grep -o -E 'key points|pithy|tools, practices|unanswered' | sort -u | wc -l | tr -d ' ')
+  [ "${n:-0}" -ge 2 ]
+}
+
 # title_slug <body> — slug of the body's first "# " heading line, or the empty
 # string when there is none. Same rules as url_slug (lowercase, non-
 # alphanumerics → hyphens, trimmed), with hyphen runs squeezed and an 80-char
@@ -786,6 +800,15 @@ if [ -n "$NOTE" ]; then
   EXTRA_NOTES="${EXTRA_NOTES}${NOTE}
 "
 fi
+# A ytx digest's summary and critique were written by an LLM, not by the person
+# whose account published the gist. Without this the model credits that person
+# (Nat) with them. Set before the prompts so every ingest path carries it.
+PROVENANCE_RULE=""
+if is_machine_digest "$WT/raw/$SLUG.md"; then
+  PROVENANCE_RULE="PROVENANCE: raw/$SLUG.md is a machine-generated digest made by the ytx tool: an LLM-written summary and critique (sections such as Key points, Pithy and provocative quotes, Unanswered questions and omissions) followed by an automatic transcript. No person wrote the digest. It is NOT the notes, summary or opinions of whoever published the gist, and NOT Nat's: never attribute it to the gist owner, to njt or to Nat Torkington, in author: or anywhere in the text. The author is the speaker or speakers in the transcript. Base claims on the transcript. Where you use a point found only in the digest, attribute it to the automated digest, not to a person.
+"
+  EXTRA_NOTES="${EXTRA_NOTES}${PROVENANCE_RULE}"
+fi
 
 # Topics mode: the table the LLM chooses from, rendered from topics.md via
 # wiki-meta so the prompt sees exactly what the guard will validate against. A
@@ -1102,6 +1125,7 @@ Do NOT fetch anything. Do NOT use WebFetch, WebSearch, or any browser tool.
 
 Wiki location: $WT
 Source archive: raw/$SLUG.md
+$PROVENANCE_RULE
 
 Read raw/$SLUG.md and write EXACTLY ONE file: summary/$SLUG.md — a concise
 precis of that source, in the curated format the wiki CLAUDE.md defines.
@@ -1147,6 +1171,7 @@ Do NOT fetch anything. Do NOT use WebFetch, WebSearch, or any browser tool.
 
 Wiki location: $WT
 Source archive: raw/$SLUG.md
+$PROVENANCE_RULE
 
 Read raw/$SLUG.md and write EXACTLY ONE file: summary/$SLUG.md — a concise
 precis of that source, in the curated format the wiki CLAUDE.md defines.

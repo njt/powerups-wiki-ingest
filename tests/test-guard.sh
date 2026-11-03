@@ -338,9 +338,11 @@ printf -- '---\nurl: https://example.invalid/orphan\ndate_fetched: 2026-08-01\n-
   > "$WIKI_PATH/raw/orphan.md"
 git -C "$WIKI_PATH" add -A && git -C "$WIKI_PATH" commit -q -m "Seed orphan raw file"
 
-STUB_MODE=summary-good STUB_SLUG=orphan \
+STUB_MODE=summary-good STUB_SLUG=orphan STUB_PROMPT_OUT="$SANDBOX/prompt5" \
   "$BIN/wiki-ingest-run" --summary-only orphan >/dev/null 2>"$SANDBOX/e5"
 check "--summary-only commits a summary" 0 $?
+grep -q '^PROVENANCE:' "$SANDBOX/prompt5" \
+  && { echo "FAIL: summary-only — an ordinary source got the machine-digest provenance rule"; fail=1; }
 [ -f "$WIKI_PATH/summary/orphan.md" ] \
   || { echo "FAIL: summary-only — summary/orphan.md missing, stderr: $(cat "$SANDBOX/e5")"; fail=1; }
 changed=$(git -C "$WIKI_PATH" show --name-only --format="" HEAD | grep -v '^$')
@@ -348,6 +350,19 @@ changed=$(git -C "$WIKI_PATH" show --name-only --format="" HEAD | grep -v '^$')
   || { echo "FAIL: summary-only — commit touched more than the summary: $changed"; fail=1; }
 [ "$(head_subject)" = "Backfill summary: orphan" ] \
   || { echo "FAIL: summary-only — commit subject is '$(head_subject)'"; fail=1; }
+
+# --- case 5b: --summary-only on a ytx digest carries the provenance rule ------
+# Nat's gists hold an LLM-written digest above a transcript; the precis must not
+# credit him with it. Two distinct ytx headings mark the archive as a digest.
+printf -- '---\nurl: https://gist.github.com/njt/0000digest\ndate_fetched: 2026-11-03\n---\n\n## Key points\n\nA point.\n\n## Unanswered questions and omissions\n\nA gap.\n\nSpeaker A: Hello.\n' \
+  > "$WIKI_PATH/raw/digest-orphan.md"
+git -C "$WIKI_PATH" add -A && git -C "$WIKI_PATH" commit -q -m "Seed digest raw file"
+STUB_MODE=summary-good STUB_SLUG=digest-orphan STUB_PROMPT_OUT="$SANDBOX/prompt5b" \
+  "$BIN/wiki-ingest-run" --summary-only digest-orphan >/dev/null 2>"$SANDBOX/e5b"
+check "--summary-only backfills a digest" 0 $?
+grep -q '^PROVENANCE: raw/digest-orphan.md is a machine-generated digest' "$SANDBOX/prompt5b" \
+  && grep -q 'never attribute it to the gist owner, to njt or to Nat Torkington' "$SANDBOX/prompt5b" \
+  || { echo "FAIL: summary-only — digest prompt lacks the provenance rule"; fail=1; }
 
 # --- case 6: --summary-only must refuse to touch anything else ----------------
 printf -- '---\nurl: https://example.invalid/orphan2\ndate_fetched: 2026-08-01\n---\n\nOrphan two body text.\n' \

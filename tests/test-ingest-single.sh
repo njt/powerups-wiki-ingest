@@ -119,6 +119,7 @@ ING=$(git -C "$W" log --format=%H --grep '^Ingest: https://example.invalid/queue
 [ "$(head_files "$ING")" = "index.md log.md note/Queues for Agents.md raw/queues-for-agents.md summary/queues-for-agents.md " ] \
   && ok "single: the commit holds exactly raw, summary, note, index, log" || bad "single: commit files: $(head_files "$ING")"
 grep -q 'SOURCE-BODY-MARKER' "$STUB_DIR/prompt" && ok "single: prompt carries the archive" || bad "single: prompt lacks the archive"
+grep -q '^PROVENANCE:' "$STUB_DIR/prompt" && bad "single: an ordinary source got the machine-digest rule" || ok "single: no provenance rule for an ordinary source"
 grep -q '^| agent-orchestration | Agent Orchestration |' "$STUB_DIR/prompt" && ok "single: prompt carries the topics table" || bad "single: no topics table"
 awk '/^# Nearest existing notes/{f=1;next} /^---$/{f=0} f && NF' "$STUB_DIR/prompt" | head -1 | grep -q '^- \[\[Orchestrating Fleets\]\] — Fleets of agents coordinate.*ORCH-PRECIS-MARKER' \
   && ok "single: the nearest note, with its précis, heads the neighbours block" || bad "single: neighbours block: $(awk '/^# Nearest existing notes/{f=1;next} /^---$/{f=0} f && NF' "$STUB_DIR/prompt" | head -2)"
@@ -149,6 +150,23 @@ check "single: a second ingest on the same topic" 0 "$RC"
 STUB_MODE=good STUB_TITLE="Flow Topics Note" STUB_TOPICS="topics: [agent-orchestration]" run_single flow https://example.invalid/flow-topics
 check "single: a flow topics: list still ingests" 0 "$RC"
 git -C "$W" log -1 --format=%s --grep 'flow-topics' | grep -q '(topics repaired)' && ok "single: topics repaired and said so" || bad "single: subject $(git -C "$W" log -1 --format=%s --grep flow-topics)"
+
+# Case 3b — a ytx digest (LLM-written summary and critique above a transcript,
+# published from Nat's account) gets the provenance rule, so the model does not
+# credit Nat with the digest. A source repeating ONE ytx heading does not.
+SRC_PLAIN="$SRC"
+SRC="$SANDBOX/digest.md"
+printf '# Digest Talk\n\n1. Key points\n\nQueues matter.\n\n4. Unanswered questions and omissions\n\nNo benchmarks.\n\nSpeaker A: orchestration queue scheduler fleet.\n' > "$SRC"
+STUB_MODE=good STUB_TITLE="Digest Talk Note" run_single digest https://gist.github.com/njt/0000digest
+check "single: a digest ingests" 0 "$RC"
+grep -q '^PROVENANCE: raw/0000digest.md is a machine-generated digest' "$STUB_DIR/prompt" \
+  && ok "single: digest prompt carries the provenance rule" || bad "single: digest prompt lacks the provenance rule"
+printf '# Report\n\nKey points\n\nOne. %s\n\nKey points\n\nTwo.\n' \
+  "$(i=0; while [ "$i" -lt 60 ]; do printf 'orchestration queue scheduler fleet '; i=$((i + 1)); done)" > "$SRC"
+STUB_MODE=good STUB_TITLE="Repeated Heading Note" run_single repeated https://example.invalid/repeated-heading
+check "single: a report repeating one heading ingests" 0 "$RC"
+grep -q '^PROVENANCE:' "$STUB_DIR/prompt" && bad "single: one heading twice was taken for a digest" || ok "single: one repeated heading is not a digest"
+SRC="$SRC_PLAIN"
 
 # Case 4 — failures leave main untouched.
 for spec in "blocked|3|https://example.invalid/blocked-page" "garbage|1|https://example.invalid/garbage-reply" \
